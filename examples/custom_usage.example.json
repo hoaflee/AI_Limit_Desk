@@ -1,0 +1,15 @@
+{
+  "_help": "Optional actual data from a trusted exporter. Never put passwords, tokens or cookies in this file.",
+  "providers": [
+    {
+      "name": "Other AI Service",
+      "windows": [
+        {"label": "Weekly limit", "remaining_percent": 42, "reset_at": "2026-11-18T12:00:00+07:00"}
+      ],
+      "daily_tokens": {
+        "2026-11-10": 12345,
+        "2026-11-11": 98765
+      }
+    }
+  ]
+}
