@@ -30,14 +30,17 @@ def hit_test_resize(x: int, y: int, width: int, height: int) -> str:
 
 
 def layout_for_size(cards: Iterable[tuple[int, bool]], area_height: int,
-                    requested_height: int | None = None) -> tuple[Layout, int]:
+                    requested_height: int | None = None,
+                    show_chart: bool = True) -> tuple[Layout, int]:
     """Honor manual height, increasing density before permitting any clipping.
 
     Excess manual height grows the plot, never creates a blank empty footer.
     """
     specs = list(cards)
-    if requested_height is None:
-        return fit_layout(specs, area_height)
+    if requested_height is None or not show_chart:
+        # Without the chart there is nothing that could absorb extra height, so
+        # the window simply hugs the quota cards.
+        return fit_layout(specs, area_height, show_chart)
     requested = max(1, min(int(requested_height), area_height))
     density, minimum = fit_layout(specs, requested)
     actual = max(requested, minimum)
@@ -47,8 +50,8 @@ def layout_for_size(cards: Iterable[tuple[int, bool]], area_height: int,
     return density, actual
 
 
-def minimum_height(cards: Iterable[tuple[int, bool]]) -> int:
-    return PROFILES[-1].window_height(cards)
+def minimum_height(cards: Iterable[tuple[int, bool]], show_chart: bool = True) -> int:
+    return PROFILES[-1].window_height(cards, show_chart)
 
 
 def resize_rect(start: WindowRect, handle: str, dx: int, dy: int,

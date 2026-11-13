@@ -42,5 +42,26 @@ class SizeSettingsTest(unittest.TestCase):
             self.assertIsNone(loaded['height'])
             self.assertFalse(loaded['manual_height'])
 
+    def _load(self,payload):
+        with TemporaryDirectory() as td:
+            cfg=Path(td)/'settings.json'
+            cfg.write_text(json.dumps(payload))
+            with patch.object(storage,'CONFIG_PATH',cfg), patch.object(storage,'ensure_dir'):
+                return storage.load_settings()
+
+    def test_show_chart_defaults_on_and_persists_off(self):
+        self.assertIs(self._load({})['show_chart'],True)
+        self.assertIs(self._load({'show_chart':False})['show_chart'],False)
+        self.assertIs(self._load({'show_chart':True})['show_chart'],True)
+        # Garbage must not silently hide the chart.
+        self.assertIs(self._load({'show_chart':'no'})['show_chart'],True)
+
+    def test_show_chart_is_saved(self):
+        with TemporaryDirectory() as td:
+            cfg=Path(td)/'settings.json'
+            with patch.object(storage,'CONFIG_PATH',cfg), patch.object(storage,'ensure_dir'):
+                storage.save_settings({**storage.DEFAULTS,'show_chart':False})
+                self.assertIs(json.loads(cfg.read_text())['show_chart'],False)
+
 if __name__=='__main__':
     unittest.main()

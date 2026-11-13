@@ -33,16 +33,20 @@ class Layout:
             return self.empty_card
         return self.card_header + quota_count * self.row_height + 2 + (17 if stale else 0)
 
-    def body_height(self, cards: Iterable[tuple[int, bool]]) -> int:
+    def body_height(self, cards: Iterable[tuple[int, bool]], show_chart: bool = True) -> int:
         specs = list(cards)
         if specs:
             cards_h = sum(self.card_height(n, stale) + self.card_gap for n, stale in specs)
         else:
             cards_h = 101
+        if not show_chart:
+            # No chart: the window ends right below the last card (no trailing gap).
+            last_gap = self.card_gap if specs else 11
+            return TOP_PADDING + cards_h - last_gap + self.bottom_padding
         return TOP_PADDING + cards_h + CHART_GAP + self.chart_height + self.bottom_padding
 
-    def window_height(self, cards: Iterable[tuple[int, bool]]) -> int:
-        return HEADER_HEIGHT + FOOTER_HEIGHT + self.body_height(cards)
+    def window_height(self, cards: Iterable[tuple[int, bool]], show_chart: bool = True) -> int:
+        return HEADER_HEIGHT + FOOTER_HEIGHT + self.body_height(cards, show_chart)
 
 
 # First usable density wins; all preserve titles, quota labels, percentages and resets.
@@ -56,7 +60,8 @@ PROFILES = (
 )
 
 
-def fit_layout(cards: Iterable[tuple[int, bool]], available_height: int) -> tuple[Layout, int]:
+def fit_layout(cards: Iterable[tuple[int, bool]], available_height: int,
+               show_chart: bool = True) -> tuple[Layout, int]:
     """Prefer readability, adapt to actual quota count and monitor work area.
 
     Extremely large custom feeds cannot physically fit into tiny screens;
@@ -65,8 +70,8 @@ def fit_layout(cards: Iterable[tuple[int, bool]], available_height: int) -> tupl
     """
     specs = list(cards)
     for candidate in PROFILES:
-        h = candidate.window_height(specs)
+        h = candidate.window_height(specs, show_chart)
         if h <= available_height:
             return candidate, h
     minimum = PROFILES[-1]
-    return minimum, minimum.window_height(specs)
+    return minimum, minimum.window_height(specs, show_chart)

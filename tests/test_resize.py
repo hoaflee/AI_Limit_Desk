@@ -59,5 +59,14 @@ class ResizeGeometryTest(unittest.TestCase):
         self.assertEqual(a.x+a.width,1596)
         self.assertEqual(a.y+a.height,996)
 
+    def test_hidden_chart_ignores_manual_height(self):
+        cards=[(2,False),(2,False)]
+        auto_layout,auto_height=layout_for_size(cards,984,None,False)
+        layout,height=layout_for_size(cards,984,900,False)
+        self.assertEqual(height,auto_height)
+        self.assertEqual(layout,auto_layout)
+        self.assertLess(height,layout_for_size(cards,984,None,True)[1])
+        self.assertLess(minimum_height(cards,False),minimum_height(cards,True))
+
 if __name__=='__main__':
     unittest.main()

@@ -37,6 +37,8 @@ WIDTH = DEFAULT_WIDTH
 HEADER_H = HEADER_HEIGHT
 FOOTER_H = FOOTER_HEIGHT
 MARGIN = 11
+# Rows shorter than this cannot hold label + reset + track on separate lines.
+COMPACT_ROW_BELOW = 36
 MASK = '#ff00ff'
 FONT = 'Segoe UI' if sys.platform == 'win32' else 'DejaVu Sans'
 COLOR = {'codex': '#52B59A', 'claude': '#DF906E', 'antigravity': '#6B92EB'}
@@ -66,8 +68,54 @@ THEMES = {
 }
 
 
+DPI_AWARE = False  # set by main() once the process opted into per-monitor DPI
+
+
 def clamp(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+def font_px(size: float, k: float) -> int:
+    """Font height in device pixels: DPI independent, scaled only by our own factor."""
+    return max(6, round(size * 96 / 72 * k))
+
+
+class ScaledCanvas(tk.Canvas):
+    """Canvas drawn in 'design pixels' and rendered at factor ``k`` (DPI / 96).
+
+    All layout code keeps working with the same constants on any monitor; only
+    this class multiplies coordinates, line widths and dash patterns.
+    """
+
+    def __init__(self, master, k: float = 1.0, **kw):
+        self.k = k
+        super().__init__(master, **kw)
+
+    def _xy(self, coords):
+        return [float(v) * self.k for v in coords]
+
+    def _opts(self, kw, wrap=False):
+        k = self.k
+        if kw.get('width') is not None:
+            kw['width'] = kw['width'] * k if wrap else max(1, round(kw['width'] * k))
+        if kw.get('dash'):
+            kw['dash'] = tuple(max(1, round(d * k)) for d in kw['dash'])
+        return kw
+
+    def create_polygon(self, *coords, **kw):
+        return super().create_polygon(*self._xy(coords), **self._opts(kw))
+
+    def create_line(self, *coords, **kw):
+        return super().create_line(*self._xy(coords), **self._opts(kw))
+
+    def create_oval(self, *coords, **kw):
+        return super().create_oval(*self._xy(coords), **self._opts(kw))
+
+    def create_text(self, *coords, **kw):
+        return super().create_text(*self._xy(coords), **self._opts(kw, wrap=True))
+
+    def create_image(self, *coords, **kw):
+        return super().create_image(*self._xy(coords), **kw)
 
 
 def rounded(c: tk.Canvas, x1, y1, x2, y2, radius, fill, outline='', width=1):
@@ -83,7 +131,8 @@ def rounded(c: tk.Canvas, x1, y1, x2, y2, radius, fill, outline='', width=1):
 
 def text(c, x, y, value, *, size=10, weight='normal', color=None, anchor='nw', width=None):
     kw = {'text': str(value), 'anchor': anchor,
-          'font': (FONT, size, weight), 'fill': color or '#FFFFFF'}
+          'font': (FONT, -font_px(size, getattr(c, 'k', 1.0)), weight),
+          'fill': color or '#FFFFFF'}
     if width is not None:
         kw['width'] = width
     return c.create_text(x, y, **kw)
@@ -179,6 +228,10 @@ class LimitDesk:
         self.drag_origin: tuple | None = None
         self.resize_origin: tuple | None = None
         self.render_width = 0
+        self.render_k = 0.0
+        self.k = 1.0
+        self.font_cache: dict[tuple, tkfont.Font] = {}
+        self.fit_cache: dict[tuple, str] = {}
         self.chart_hover: str | None = None
         self.chart_bars: list[tuple[int, int, str]] = []
         self.chart_hover_bounds = (0, 0)
@@ -196,7 +249,6 @@ class LimitDesk:
 
         self.root = tk.Tk()
         self.root.withdraw()
-        self.small_font = tkfont.Font(root=self.root, family=FONT, size=8)
         self.root.title('AI Limit Desk')  # taskbar/window manager only; not painted
         self.root.configure(bg=MASK)
         self.root.overrideredirect(True)
@@ -207,30 +259,35 @@ class LimitDesk:
                 pass
         self.root.wm_attributes('-topmost', bool(self.config['always_on_top']))
         self.apply_opacity()
+        self.k = self.detect_scale()
         left, top, right, bottom = self.work_area()
-        self.width = max(MIN_WIDTH, min(self.width, max(MIN_WIDTH, right-left-16)))
+        self.width = max(MIN_WIDTH, min(self.width, max(MIN_WIDTH, (right-left)/self.k-16)))
+        self.width = int(self.width)
         self.config['width'] = self.width
         cards = self.card_specs()
         requested_height = self.config.get('height') if self.config.get('manual_height') else None
-        self.layout, self.height = layout_for_size(cards, max(100, bottom-top-16), requested_height)
+        self.layout, self.height = layout_for_size(cards, self.avail_height(), requested_height,
+                                                   self.show_chart)
         x = self.config.get('x')
         y = self.config.get('y')
-        if not isinstance(x, int) or x < left-self.width+50 or x > right-60:
-            x = max(left+12, right-self.width-35)
+        pw, ph = self.px(self.width), self.px(self.height)
+        if not isinstance(x, int) or x < left-pw+50 or x > right-60:
+            x = max(left+12, right-pw-35)
         if not isinstance(y, int) or y < top or y > bottom-60:
             y = top+38
-        y = max(top+8, min(y, bottom-self.height-8))
-        self.root.geometry(f'{self.width}x{self.height}+{x}+{y}')
+        y = max(top+8, min(y, bottom-ph-8))
+        self.root.geometry(f'{pw}x{ph}+{x}+{y}')
         self.root.resizable(False, False)  # Borderless window uses our own grip handlers.
         self.render_width = self.width
+        self.render_k = self.k
 
-        self.frame = tk.Canvas(self.root, width=self.width, height=self.height, bg=MASK,
-                               highlightthickness=0, bd=0)
+        self.frame = ScaledCanvas(self.root, self.k, width=pw, height=ph, bg=MASK,
+                                  highlightthickness=0, bd=0)
         self.frame.place(x=0, y=0)
-        self.body = tk.Canvas(self.root, width=self.width-2*MARGIN,
-                              height=self.height-HEADER_H-FOOTER_H,
-                              bg=self.colors['bg'], highlightthickness=0, bd=0)
-        self.body.place(x=MARGIN, y=HEADER_H)
+        self.body = ScaledCanvas(self.root, self.k, width=self.px(self.width-2*MARGIN),
+                                 height=self.px(self.height-HEADER_H-FOOTER_H),
+                                 bg=self.colors['bg'], highlightthickness=0, bd=0)
+        self.body.place(x=self.px(MARGIN), y=self.px(HEADER_H))
 
         self.frame.bind('<Button-1>', self.header_click)
         self.frame.bind('<B1-Motion>', self.header_drag)
@@ -286,23 +343,108 @@ class LimitDesk:
     def card_specs(self) -> list[tuple[int, bool]]:
         return [(len(s.quotas), s.status == 'stale') for s in self.get_snapshots()]
 
+    # ----- DPI scale, measuring ------------------------------------------------
+    @property
+    def show_chart(self) -> bool:
+        return self.config.get('show_chart', True) is not False
+
+    def px(self, value: float) -> int:
+        """Design pixels -> device pixels for the current monitor."""
+        return int(round(value * self.k))
+
+    def detect_scale(self) -> float:
+        """DPI / 96 of the monitor holding the window (1.0 when not DPI aware)."""
+        if not DPI_AWARE:
+            return 1.0
+        dpi = None
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+                user32.MonitorFromWindow.restype = wintypes.HMONITOR
+                monitor = user32.MonitorFromWindow(self.root.winfo_id(), 2)
+                dpi_x, dpi_y = ctypes.c_uint(), ctypes.c_uint()
+                if monitor and ctypes.windll.shcore.GetDpiForMonitor(
+                        monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)) == 0:
+                    dpi = dpi_x.value
+            except (AttributeError, OSError, TypeError, ValueError):
+                dpi = None
+        if not dpi:
+            try:
+                dpi = self.root.winfo_fpixels('1i')
+            except tk.TclError:
+                dpi = 96
+        return clamp(round(dpi / 96 * 8) / 8, 1.0, 3.0)
+
+    def avail_height(self) -> int:
+        """Usable work-area height expressed in design pixels."""
+        _, top, _, bottom = self.work_area()
+        return max(100, int((bottom - top) / self.k) - 16)
+
+    def font(self, size: float, weight: str = 'normal') -> tkfont.Font:
+        key = (size, weight, self.k)
+        if key not in self.font_cache:
+            self.font_cache[key] = tkfont.Font(root=self.root, family=FONT,
+                                               size=-font_px(size, self.k), weight=weight)
+        return self.font_cache[key]
+
+    def tw(self, value: str, size: float, weight: str = 'normal') -> float:
+        """Width of text in design pixels."""
+        return self.font(size, weight).measure(str(value)) / self.k
+
+    def fit(self, value: str, size: float, weight: str, max_w: float) -> str:
+        """Ellipsize to the exact space available instead of guessing a character count."""
+        value = str(value)
+        key = (value, size, weight, int(max_w), self.k)
+        cached = self.fit_cache.get(key)
+        if cached is None:
+            if len(self.fit_cache) > 1500:
+                self.fit_cache.clear()
+            font = self.font(size, weight)
+            cached = fit_line([value], lambda t: font.measure(t) / self.k, max(0, max_w))
+            self.fit_cache[key] = cached
+        return cached
+
+    def apply_scale(self, new_k: float):
+        """The window moved to a monitor with another DPI: rebuild at the new factor."""
+        if abs(new_k - self.k) < 0.01:
+            return
+        x, y = int(self.root.winfo_x()), int(self.root.winfo_y())
+        self.k = new_k
+        self.img_cache.clear()
+        self.font_cache.clear()
+        self.fit_cache.clear()
+        self.hide_settings()
+        self.frame.k = new_k
+        self.body.k = new_k
+        self.render_k = 0.0  # force reflow to resize both canvases
+        self.root.geometry(f'+{x}+{y}')
+        self.draw()
+
     def reflow(self) -> bool:
         """Auto-size by default, but respect the user's saved mouse resize."""
         left, top, right, bottom = self.work_area()
         cards = self.card_specs()
         height_pref = self.config.get('height') if self.config.get('manual_height') else None
-        layout, height = layout_for_size(cards, max(100, bottom-top-16), height_pref)
-        if layout == self.layout and height == self.height and self.render_width == self.width:
+        layout, height = layout_for_size(cards, self.avail_height(), height_pref,
+                                         self.show_chart)
+        if (layout == self.layout and height == self.height
+                and self.render_width == self.width and self.render_k == self.k):
             return False
         self.layout, self.height = layout, height
         self.render_width = self.width
+        self.render_k = self.k
         x = int(self.root.winfo_x())
-        y = max(top+8, min(int(self.root.winfo_y()), bottom-height-8))
-        self.root.geometry(f'{self.width}x{height}+{x}+{y}')
-        self.frame.configure(width=self.width, height=height)
-        self.body.configure(width=self.width-2*MARGIN,
-                            height=height-HEADER_H-FOOTER_H)
-        if self.config.get('manual_height'):
+        pw, ph = self.px(self.width), self.px(height)
+        y = max(top+8, min(int(self.root.winfo_y()), bottom-ph-8))
+        self.root.geometry(f'{pw}x{ph}+{x}+{y}')
+        self.frame.configure(width=pw, height=ph)
+        self.body.configure(width=self.px(self.width-2*MARGIN),
+                            height=self.px(height-HEADER_H-FOOTER_H))
+        self.body.place(x=self.px(MARGIN), y=self.px(HEADER_H))
+        if self.config.get('manual_height') and self.show_chart:
             self.config['height'] = height
         return True
 
@@ -347,6 +489,14 @@ class LimitDesk:
             threading.Thread(target=self.fetch_logos,daemon=True,name='LogoDownload').start()
             self.refresh(manual=True)
 
+    def toggle_chart(self):
+        """Show/hide the daily-token chart; the window re-fits to the quota cards."""
+        self.config['show_chart'] = not self.show_chart
+        self.chart_hover = None
+        self.persist()
+        self.draw()
+        self.draw_settings()
+
     def set_chart_days(self, days: int):
         self.config['chart_days'] = days
         self.chart_hover = None
@@ -374,21 +524,27 @@ class LimitDesk:
         window.configure(bg=self.colors['surface'])
         window.wm_attributes('-topmost', True)
         window.resizable(False, False)
-        window.geometry(f'340x208+{self.root.winfo_x()+40}+{self.root.winfo_y()+85}')
+        k = self.k
+        window.geometry(f'{self.px(340)}x{self.px(208)}+{self.root.winfo_x()+self.px(40)}'
+                        f'+{self.root.winfo_y()+self.px(85)}')
         fg, bg = self.colors['text'], self.colors['surface']
-        tk.Label(window, text='Khoảng ngày muốn xem (YYYY-MM-DD)', font=(FONT, 10, 'bold'),
-                 fg=fg, bg=bg).pack(pady=(13, 10))
+
+        def pf(size, weight='normal'):
+            return (FONT, -font_px(size, k), weight)
+
+        tk.Label(window, text='Khoảng ngày muốn xem (YYYY-MM-DD)', font=pf(10, 'bold'),
+                 fg=fg, bg=bg).pack(pady=(self.px(13), self.px(10)))
         fields = tk.Frame(window, bg=bg)
         fields.pack()
         start_var = tk.StringVar(value=start.isoformat())
         end_var = tk.StringVar(value=end.isoformat())
         for label_, var in [('Từ', start_var), ('Đến', end_var)]:
             col = tk.Frame(fields, bg=bg)
-            col.pack(side='left', padx=8)
-            tk.Label(col, text=label_, font=(FONT, 9), fg=fg, bg=bg).pack(anchor='w')
-            tk.Entry(col, width=15, textvariable=var, font=(FONT, 10),
+            col.pack(side='left', padx=self.px(8))
+            tk.Label(col, text=label_, font=pf(9), fg=fg, bg=bg).pack(anchor='w')
+            tk.Entry(col, width=15, textvariable=var, font=pf(10),
                      bg=self.colors['raised'], fg=fg, insertbackground=fg,
-                     relief='flat').pack(ipady=7)
+                     relief='flat').pack(ipady=self.px(7))
 
         def submit():
             try:
@@ -404,7 +560,8 @@ class LimitDesk:
             window.destroy()
 
         tk.Button(window, text='Áp dụng', command=submit, bg=self.colors['accent'], fg='white',
-                  font=(FONT, 10, 'bold'), bd=0, cursor='hand2').pack(pady=13, ipadx=35, ipady=5)
+                  font=pf(10, 'bold'), bd=0,
+                  cursor='hand2').pack(pady=self.px(13), ipadx=self.px(35), ipady=self.px(5))
         window.bind('<Return>', lambda _: submit())
 
     def toggle_theme(self):
@@ -463,13 +620,15 @@ class LimitDesk:
         if key in COLOR:
             path = self.logo_path(key)
             if path.is_file():
-                cachekey = (key,size,self.config['theme'])
+                kc = getattr(c, 'k', 1.0)
+                cachekey = (key,size,self.config['theme'],kc)
                 if cachekey not in self.img_cache:
                     try:
                         from PIL import Image, ImageTk
                         with Image.open(path) as original:
                             im = original.convert('RGBA')
-                            im.thumbnail((size,size), Image.Resampling.LANCZOS)
+                            side = max(1, round(size*kc))
+                            im.thumbnail((side,side), Image.Resampling.LANCZOS)
                             self.img_cache[cachekey] = ImageTk.PhotoImage(im, master=self.root)
                     except (OSError, ImportError, tk.TclError):
                         pass
@@ -588,6 +747,9 @@ class LimitDesk:
     def tick(self):
         if self.stopped:
             return
+        new_k = self.detect_scale()
+        if abs(new_k - self.k) >= 0.01:
+            self.apply_scale(new_k)
         if self.last_poll and not self.busy and (now_utc()-self.last_poll).total_seconds() >= self.config['interval']:
             self.refresh()
         else:
@@ -632,10 +794,20 @@ class LimitDesk:
                   f'{connected}/{len(selected)} nguồn trực tuyến' if selected else 'Chưa chọn dịch vụ')
         dot = '#E6B865' if self.busy else ('#57C9A9' if selected and connected == len(selected) else p['quiet'])
         c.create_oval(23,self.height-24,31,self.height-16,fill=dot,outline='')
-        text(c,39,self.height-27,status,size=9,color=p['muted'])
         age = '--:--' if not self.last_poll else self.last_poll.astimezone().strftime('%H:%M:%S')
-        text(c,self.width-33,self.height-27,f'{age}   ·   {self.config["interval"]}s',
-             size=9,color=p['quiet'],anchor='ne')
+        # Right block shrinks (drops the interval) before it may touch the status text.
+        right = f'{age}   ·   {self.config["interval"]}s'
+        status_w = self.tw(status, 9)
+        if 39 + status_w + 14 + self.tw(right, 9) > self.width - 33:
+            right = age
+        if 39 + status_w + 14 + self.tw(right, 9) > self.width - 33:
+            right = ''
+        right_w = self.tw(right, 9) if right else 0
+        text(c,39,self.height-27,
+             self.fit(status, 9, 'normal', self.width-33-39-right_w-(14 if right else 0)),
+             size=9,color=p['muted'])
+        if right:
+            text(c,self.width-33,self.height-27,right,size=9,color=p['quiet'],anchor='ne')
         # Visible corner grip makes resizing discoverable on a borderless window.
         for delta in (0, 6, 12):
             c.create_line(self.width-10-delta,self.height-8,
@@ -643,8 +815,9 @@ class LimitDesk:
                           fill=p['quiet'],width=1)
 
     def body_click(self, event):
+        ex, ey = event.x / self.k, event.y / self.k
         for x1,y1,x2,y2,action in self.chart_regions:
-            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+            if x1 <= ex <= x2 and y1 <= ey <= y2:
                 if action == 'prev':
                     self.shift_chart(-1)
                 elif action == 'next':
@@ -655,15 +828,16 @@ class LimitDesk:
                     self.open_date_picker()
                 return
         for x1,y1,x2,y2,ident in self.link_regions:
-            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+            if x1 <= ex <= x2 and y1 <= ey <= y2:
                 if ident in URLS:
                     webbrowser.open(URLS[ident])
                 break
 
     def body_move(self,event):
+        ex, ey = event.x / self.k, event.y / self.k
         nextday = None
         for x1,x2,day in self.chart_bars:
-            if x1-7 <= event.x <= x2+7 and self.chart_hover_bounds[0] <= event.y <= self.chart_hover_bounds[1]:
+            if x1-7 <= ex <= x2+7 and self.chart_hover_bounds[0] <= ey <= self.chart_hover_bounds[1]:
                 nextday = day
                 break
         if nextday != self.chart_hover:
@@ -683,11 +857,14 @@ class LimitDesk:
         self.link_regions = []
         self.chart_regions = []
         self.chart_bars = []
+        self.chart_hover_bounds = (0, 0)
         y_abs = self.draw_quotas()
-        self.draw_tokens(y_abs)
+        if self.show_chart:
+            self.draw_tokens(y_abs)
         self.stale_signature_drawn = self.stale_signature()
         self.doc_height = self.layout.body_height(
-            (len(s.quotas), s.status == 'stale') for s in self.get_snapshots())
+            [(len(s.quotas), s.status == 'stale') for s in self.get_snapshots()],
+            self.show_chart)
 
     def draw_quotas(self):
         c, p = self.body, self.colors
@@ -697,9 +874,10 @@ class LimitDesk:
         selected = self.get_snapshots()
         if not selected:
             rounded(c,11,y_abs,sw-11,y_abs+90,17,p['surface'],p['border'])
-            text(c,24,y_abs+17,'Chưa có dịch vụ được bật',size=11,
+            text(c,24,y_abs+17,self.fit('Chưa có dịch vụ được bật',11,'bold',sw-48),size=11,
                  weight='bold',color=p['text'])
-            text(c,24,y_abs+48,'Nhấn ⚙ để bật Codex, Claude Code hoặc Antigravity.',
+            text(c,24,y_abs+48,self.fit('Nhấn ⚙ để bật Codex, Claude Code hoặc Antigravity.',
+                                        9,'normal',sw-48),
                  size=9,color=p['muted'])
             return y_abs+101
         for s in selected:
@@ -709,11 +887,14 @@ class LimitDesk:
             rounded(c,11,top,sw-11,top+h,17,p['surface'],p['border'])
             self.icon(c,s.id,37,int(top+ly.card_header/2),
                       25 if ly.row_height <= 33 else 29)
-            text(c,58,top+max(9,int(ly.card_header*.27)),
-                 shorten(s.title,26),size=11,weight='bold',color=p['text'])
             status={'ok':'LIVE','stale':'CŨ','error':'CHƯA KẾT NỐI'}.get(s.status,'--')
             statcolor=('#56C7A7' if s.status=='ok' else
                        '#E2AB59' if s.status=='stale' else p['quiet'])
+            status_w = self.tw(status, 8, 'bold')
+            # Title gets whatever the status (and the LIVE dot) leaves free.
+            title_room = sw - 30 - status_w - (16 if s.status == 'ok' else 0) - 12 - 58
+            text(c,58,top+max(9,int(ly.card_header*.27)),
+                 self.fit(s.title,11,'bold',title_room),size=11,weight='bold',color=p['text'])
             text(c,sw-30,top+max(12,int(ly.card_header*.34)),status,
                  size=8,weight='bold',color=statcolor,anchor='ne')
             self.link_regions.append((20,int(top+6),sw-14,
@@ -721,36 +902,48 @@ class LimitDesk:
             if count:
                 for index,q in enumerate(s.quotas):
                     y = top + ly.row_origin + index*ly.row_height
-                    if ly.row_height < 33:
+                    pct = fmt_percent(q.left)
+                    if ly.row_height < COMPACT_ROW_BELOW:
                         # On small monitors a one-line quota + reset fits neatly
                         # above the track; multi-line content would overlap.
-                        text(c,27,y,shorten(q.label,22),size=9,color=p['text'])
-                        text(c,sw-104,y+1,compact_reset(q.reset_at),
+                        pct_w = self.tw(pct, 9, 'bold')
+                        reset_s = compact_reset(q.reset_at)
+                        reset_right = sw - 28 - pct_w - 12
+                        reset_w = self.tw(reset_s, 7)
+                        label_room = reset_right - reset_w - 10 - 27
+                        text(c,27,y,self.fit(q.label,9,'normal',label_room),
+                             size=9,color=p['text'])
+                        text(c,reset_right,y+1,reset_s,
                              size=7,color=p['muted'],anchor='ne')
-                        text(c,sw-28,y,fmt_percent(q.left),size=9,
+                        text(c,sw-28,y,pct,size=9,
                              weight='bold',color=quota_color(q.left),anchor='ne')
                         bar_top = y+18
                     else:
-                        text(c,27,y,shorten(q.label,38),size=10,color=p['text'])
-                        text(c,sw-28,y,fmt_percent(q.left),size=10,
+                        pct_w = self.tw(pct, 10, 'bold')
+                        text(c,27,y,self.fit(q.label,10,'normal',sw-28-pct_w-12-27),
+                             size=10,color=p['text'])
+                        text(c,sw-28,y,pct,size=10,
                              weight='bold',color=quota_color(q.left),anchor='ne')
                         bar_top = y+max(11,round(ly.row_height*.38))
                         reset_y = y+max(19,round(ly.row_height*.63))
-                        text(c,27,reset_y,shorten(reset_text(q.reset_at),55),
+                        text(c,27,reset_y,self.fit(reset_text(q.reset_at),8,'normal',sw-54),
                              size=8,color=p['muted'])
                     rounded(c,27,bar_top,sw-27,bar_top+6,3,p['track'])
                     if q.left > 0:
                         rounded(c,27,bar_top,27+(sw-54)*q.left/100,bar_top+6,
                                 3,quota_color(q.left))
                 if s.status=='stale':
-                    line = fit_line(self.stale_candidates(s), self.small_font.measure, sw-54)
+                    line = fit_line(self.stale_candidates(s),
+                                    lambda t: self.tw(t, 8), sw-54)
                     text(c,27,top+h-19,line,size=8,color=statcolor)
             else:
                 text(c,27,top+min(55,h-36),
-                     shorten(s.message or 'Chưa nhận được số liệu hạn mức',66),
+                     self.fit(s.message or 'Chưa nhận được số liệu hạn mức',9,'normal',
+                              2*(sw-54)-24),
                      size=9,color=p['muted'],width=sw-54)
             if s.status=='ok':
-                c.create_oval(sw-75,top+18,sw-68,top+25,fill='#56C7A7',outline='')
+                dot_x = sw - 30 - status_w - 13
+                c.create_oval(dot_x,top+18,dot_x+7,top+25,fill='#56C7A7',outline='')
             y_abs += h + ly.card_gap
         return y_abs + 1
 
@@ -793,12 +986,17 @@ class LimitDesk:
         daily = {d: sum(max(0, int(values.get(d, 0))) for _,_,_,values,_ in sources)
                  for d in days}
         total = sum(daily.values())
-        text(c,27,top+16,'TOKEN THEO NGÀY',size=10,weight='bold',color=p['text'])
-        text(c,sw-27,top+11,fmt_tokens(total) if sources else '—',size=17,weight='bold',
+        title = 'TOKEN THEO NGÀY'
+        total_s = fmt_tokens(total) if sources else '—'
+        # Big total shrinks before it can run into the section title.
+        total_size = 17
+        for total_size in (17, 15, 13, 11):
+            if self.tw(title,10,'bold') + self.tw(total_s,total_size,'bold') + 16 <= sw-54:
+                break
+        text(c,27,top+16,self.fit(title,10,'bold',sw-54-self.tw(total_s,total_size,'bold')-12),
+             size=10,weight='bold',color=p['text'])
+        text(c,sw-27,top+11+(17-total_size)*0.6,total_s,size=total_size,weight='bold',
              color=p['text'],anchor='ne')
-        # if chart_h >= 225:
-        #     text(c,sw-27,top+35,'tổng trong khoảng',size=8,
-        #          color=p['quiet'],anchor='ne')
 
         def control(x1, x2, name, label_, *, active=True, weight='bold'):
             fill = p['raised'] if active else p['bg']
@@ -808,42 +1006,54 @@ class LimitDesk:
             self.chart_regions.append((x1,int(top+51-delta),x2,int(top+80-delta),name))
 
         oldest_allowed = date.today()-timedelta(days=HISTORY_DAYS-1)
+        days_label = f'{len(days)} NGÀY ▾'
+        days_w = max(78, self.tw(days_label,9,'bold')+26)
+        date_right = sw - 25 - days_w - 40
+        range_options = [f'{start:%d/%m} – {end:%d/%m/%y}  ▾',
+                         f'{start:%d/%m}–{end:%d/%m}  ▾',
+                         f'{end:%d/%m}  ▾']
+        range_label = fit_line(range_options, lambda t: self.tw(t,9), date_right-60-14)
         control(26,54,'prev','‹',active=(start > oldest_allowed))
-        range_label = f'{start:%d/%m} – {end:%d/%m/%y}'
-        date_right = sw - 160
-        control(60,date_right,'date',f'{range_label}  ▾',weight='normal')
+        control(60,date_right,'date',range_label,weight='normal')
         control(date_right+6,date_right+34,'next','›',active=(end < date.today()))
-        control(date_right+40,sw-25,'days',f'{len(days)} NGÀY ▾')
+        control(date_right+40,sw-25,'days',days_label)
 
         if sources:
             leg_y = top+96-delta
-            if len(sources) <= 3:
-                leg_dx = 122 if len(sources)==3 else 174
-                for i,(_,name,color,_,_) in enumerate(sources):
-                    x=28+i*leg_dx
-                    c.create_oval(x,leg_y+2,x+9,leg_y+11,fill=color,outline='')
-                    text(c,x+15,leg_y,shorten(name,16),size=9,color=p['text'])
-            else:
-                for i,(_,name,color,_,_) in enumerate(sources[:2]):
-                    x=28+i*145
-                    c.create_oval(x,leg_y+2,x+9,leg_y+11,fill=color,outline='')
-                    text(c,x+15,leg_y,shorten(name,15),size=9,color=p['text'])
-                text(c,sw-27,leg_y,f'+{len(sources)-2} nguồn',size=8,
+            right_edge = sw-27
+            x = 28
+            shown = 0
+            for i,(_,name,color,_,_) in enumerate(sources):
+                hidden_after = len(sources)-i-1
+                reserve = (self.tw(f'+{hidden_after} nguồn',8)+12) if hidden_after else 0
+                room = right_edge-x-15-reserve
+                if room < 28 and shown:
+                    break
+                label = self.fit(name,9,'normal',room)
+                item_w = 15+self.tw(label,9)
+                c.create_oval(x,leg_y+2,x+9,leg_y+11,fill=color,outline='')
+                text(c,x+15,leg_y,label,size=9,color=p['text'])
+                x += item_w+18
+                shown += 1
+            if shown < len(sources):
+                text(c,right_edge,leg_y+1,f'+{len(sources)-shown} nguồn',size=8,
                      color=p['muted'],anchor='ne')
         else:
-            text(c,28,top+96-delta,'Chưa có dữ liệu token thực từ dịch vụ đang hiện.',
+            text(c,28,top+96-delta,
+                 self.fit('Chưa có dữ liệu token thực từ dịch vụ đang hiện.',9,'normal',sw-56),
                  size=9,color=p['muted'])
             empty_top = top+128-delta
             empty_bottom = top+chart_h-43
             rounded(c,27,empty_top,sw-27,empty_bottom,12,p['raised'])
             text(c,sw/2,empty_top+max(15,(empty_bottom-empty_top)*.29),
-                 'Chưa có lịch sử token',size=11,weight='bold',
+                 self.fit('Chưa có lịch sử token',11,'bold',sw-80),size=11,weight='bold',
                  color=p['text'],anchor='center')
             if empty_bottom-empty_top >= 76:
-                text(c,sw/2,empty_top+53,'Dữ liệu sẽ xuất hiện khi CLI/IDE tạo log',
+                text(c,sw/2,empty_top+53,
+                     self.fit('Dữ liệu sẽ xuất hiện khi CLI/IDE tạo log',9,'normal',sw-80),
                      size=9,color=p['muted'],anchor='center')
             text(c,27,top+chart_h-27,
-                 'Không có số liệu: tổng token chưa thể xác định.',
+                 self.fit('Không có số liệu: tổng token chưa thể xác định.',8,'normal',sw-54),
                  size=8,color=p['quiet'])
             self.chart_hover_bounds=(0,0)
             return
@@ -853,17 +1063,24 @@ class LimitDesk:
         graph_h = graph_bottom-graph_top
         self.chart_hover_bounds = (int(graph_top),int(graph_bottom+20))
         upper = max(1,max(daily.values(),default=0))
-        chart_left, chart_right = 64, sw-30
+        axis_labels = [fmt_tokens(int(upper*i/2)) for i in range(3)]
+        axis_w = max(self.tw(label_,8) for label_ in axis_labels)
+        chart_left, chart_right = max(64, 25+axis_w+10), sw-30
         width = chart_right-chart_left
         for i in range(3):
             y=graph_bottom-i*graph_h/2
             c.create_line(chart_left,y,chart_right,y,fill=p['divider'],dash=(2,4))
-            text(c,55,y,fmt_tokens(int(upper*i/2)),size=8,color=p['quiet'],anchor='e')
+            text(c,chart_left-9,y,axis_labels[i],size=8,color=p['quiet'],anchor='e')
 
         n = max(1, len(days))
         dx = width/n
         barwidth = min(27,max(4,dx*0.59))
-        label_every = 1 if n <= 7 else 2 if n <= 14 else 5
+        # Date labels are thinned by their measured width, so they never touch.
+        every_full = max(1, math.ceil((self.tw('00/00',8)+8)/dx))
+        if every_full <= 2:
+            label_every, label_fmt = every_full, '%d/%m'
+        else:
+            label_every, label_fmt = max(1, math.ceil((self.tw('00',8)+8)/dx)), '%d'
         for index,day in enumerate(days):
             x=chart_left+(index+0.5)*dx
             self.chart_bars.append((int(x-dx/2),int(x+dx/2),day))
@@ -878,37 +1095,40 @@ class LimitDesk:
                     rounded(c,x-barwidth/2,y_top,x+barwidth/2,y_bottom,
                             min(4,barwidth/3),fill)
                 y_bottom = y_top
-            if index % label_every == 0 or index == n-1:
+            if (n-1-index) % label_every == 0:
                 label_date = datetime.strptime(day,'%Y-%m-%d')
-                label = label_date.strftime('%d/%m') if n <= 14 else label_date.strftime('%d')
-                text(c,x,graph_bottom+14,label,size=8,color=p['muted'],anchor='center')
+                text(c,x,graph_bottom+14,label_date.strftime(label_fmt),size=8,
+                     color=p['muted'],anchor='center')
 
         # Always clearly distinguish missing usage from a measured value of zero.
         footnote = ('Chỉ tổng hợp các nguồn có lịch sử token · không quy đổi % quota.'
                     if sources else 'Không có số liệu: tổng token chưa thể xác định.')
-        text(c,27,top+chart_h-27,shorten(footnote,66),size=8,color=p['quiet'])
+        text(c,27,top+chart_h-27,self.fit(footnote,8,'normal',sw-54),size=8,color=p['quiet'])
         if sources and any('UTC' in desc for *_,desc in sources):
-            text(c,27,top+chart_h-14,'Codex API dùng ngày UTC; log dùng giờ máy.',
+            text(c,27,top+chart_h-14,
+                 self.fit('Codex API dùng ngày UTC; log dùng giờ máy.',8,'normal',sw-54),
                  size=8,color=p['quiet'])
 
         if self.chart_hover in daily and sources:
             selected = self.chart_hover
             ix=days.index(selected)
             barx = chart_left+(ix+0.5)*dx
-            x=clamp(barx-93,24,sw-222)
+            tip_w = 208
+            x=clamp(barx-93,min(24,sw-tip_w-8),max(24,sw-tip_w-14))
             tooltip_height = 35 + min(4,len(sources))*19 + (15 if len(sources)>4 else 0)
             y=top+108-delta
-            rounded(c,x,y,x+208,y+tooltip_height,11,p['bg'],p['border'],2)
+            rounded(c,x,y,x+tip_w,y+tooltip_height,11,p['bg'],p['border'],2)
             text(c,x+11,y+9,datetime.fromisoformat(selected).strftime('%d/%m/%Y'),
                  size=10,weight='bold',color=p['text'])
-            text(c,x+198,y+9,fmt_tokens(daily[selected]),size=9,weight='bold',
+            text(c,x+tip_w-10,y+9,fmt_tokens(daily[selected]),size=9,weight='bold',
                  color=p['text'],anchor='ne')
             for j,(_,name,color,points,_) in enumerate(sources[:4]):
                 yy=y+32+j*19
+                amount_s = fmt_tokens(max(0,int(points.get(selected,0))))
                 c.create_oval(x+11,yy,x+18,yy+7,fill=color,outline='')
-                text(c,x+23,yy-4,shorten(name,17),size=8,color=p['muted'])
-                text(c,x+197,yy-4,fmt_tokens(max(0,int(points.get(selected,0)))),
-                     size=8,color=p['text'],anchor='ne')
+                text(c,x+23,yy-4,self.fit(name,8,'normal',tip_w-23-11-self.tw(amount_s,8)-10),
+                     size=8,color=p['muted'])
+                text(c,x+tip_w-11,yy-4,amount_s,size=8,color=p['text'],anchor='ne')
             if len(sources)>4:
                 text(c,x+11,y+32+4*19,f'+{len(sources)-4} nguồn khác',
                      size=8,color=p['quiet'])
@@ -916,7 +1136,7 @@ class LimitDesk:
     def frame_move(self, event):
         if self.resize_origin is not None:
             return
-        handle = hit_test_resize(event.x,event.y,self.width,self.height)
+        handle = self.resize_handle(event.x/self.k,event.y/self.k)
         cursor_map = {'w':'sb_h_double_arrow','e':'sb_h_double_arrow',
                       'n':'sb_v_double_arrow','s':'sb_v_double_arrow',
                       'nw':'top_left_corner','se':'bottom_right_corner',
@@ -926,8 +1146,18 @@ class LimitDesk:
         except tk.TclError:
             self.frame.configure(cursor='arrow')
 
+    def resize_handle(self, x: float, y: float) -> str:
+        """Resize target under a design-pixel point; no vertical resize without the chart."""
+        handle = hit_test_resize(x, y, self.width, self.height)
+        if not self.show_chart:
+            # Height is fully automatic when only quota cards are shown.
+            handle = handle.replace('n', '').replace('s', '')
+            if not handle and x >= self.width-26 and y >= self.height-26:
+                handle = 'e'
+        return handle
+
     def frame_double_click(self,event):
-        if event.x >= self.width-29 and event.y >= self.height-29:
+        if event.x/self.k >= self.width-29 and event.y/self.k >= self.height-29:
             self.config['manual_height'] = False
             self.config['height'] = None
             self.width = WIDTH
@@ -937,28 +1167,29 @@ class LimitDesk:
             self.persist()
 
     def header_click(self,event):
-        handle = hit_test_resize(event.x,event.y,self.width,self.height)
+        ex, ey = event.x/self.k, event.y/self.k
+        handle = self.resize_handle(ex,ey)
         if handle:
             current = WindowRect(self.root.winfo_x(),self.root.winfo_y(),
-                                 self.width,self.height)
+                                 self.px(self.width),self.px(self.height))
             self.resize_origin = (handle,event.x_root,event.y_root,current)
             self.drag_origin = None
             return
-        if event.y >= self.height-FOOTER_H:
-            if event.x < 220:
+        if ey >= self.height-FOOTER_H:
+            if ex < 220:
                 self.refresh(manual=True)
             else:
                 self.show_settings()
             return
-        if event.y > HEADER_H:
+        if ey > HEADER_H:
             return
-        if self.width-140 <= event.x < self.width-107:
+        if self.width-140 <= ex < self.width-107:
             self.refresh(manual=True)
-        elif self.width-102 <= event.x < self.width-68:
+        elif self.width-102 <= ex < self.width-68:
             self.toggle_theme()
-        elif self.width-63 <= event.x < self.width-30:
+        elif self.width-63 <= ex < self.width-30:
             self.show_settings()
-        elif event.x >= self.width-29:
+        elif ex >= self.width-29:
             self.quit()
         else:
             self.drag_origin=(event.x_root,event.y_root,self.root.winfo_x(),self.root.winfo_y())
@@ -966,13 +1197,17 @@ class LimitDesk:
     def header_drag(self,event):
         if self.resize_origin:
             handle, ox, oy, original = self.resize_origin
+            k = self.k
             r = resize_rect(original,handle,event.x_root-ox,event.y_root-oy,
-                            self.work_area(),minimum_height(self.card_specs()))
+                            self.work_area(),
+                            self.px(minimum_height(self.card_specs(), self.show_chart)),
+                            self.px(MIN_WIDTH))
             if 's' in handle or 'n' in handle:
                 self.config['manual_height'] = True
-                self.config['height'] = r.height
-            self.width = r.width
+                self.config['height'] = max(1, round(r.height/k))
+            self.width = max(MIN_WIDTH, round(r.width/k))
             self.root.geometry(f'{r.width}x{r.height}+{r.x}+{r.y}')
+            self.root.update_idletasks()  # reflow reads the new origin back
             self.draw()
             return
         if self.drag_origin:
@@ -984,6 +1219,9 @@ class LimitDesk:
             self.drag_origin=None
             self.resize_origin=None
             self.persist()
+            new_k = self.detect_scale()  # dropped onto a monitor with another DPI?
+            if abs(new_k - self.k) >= 0.01:
+                self.apply_scale(new_k)
 
     def show_settings(self):
         if self.settings_root is not None and self.settings_root.winfo_exists():
@@ -1001,15 +1239,17 @@ class LimitDesk:
                 pass
         p.wm_attributes('-topmost',True)
         x0,y0 = self.root.winfo_x(),self.root.winfo_y()
-        w,h=354,580
-        x=x0-w-13 if x0>=w+20 else x0+self.width+12
-        screenw=self.root.winfo_screenwidth()
-        if x+w>screenw:
-            x=max(0,screenw-w-10)
-        y=max(0,min(y0,self.root.winfo_screenheight()-h-15))
+        left,top,right,bottom = self.work_area()
+        # Same DPI factor as the widget, but never taller than the work area.
+        sk = min(self.k, max(0.6, (bottom-top-20)/630))
+        w,h = int(354*sk), int(630*sk)
+        x=x0-w-13 if x0>=w+20 else x0+self.px(self.width)+12
+        if x+w>right:
+            x=max(left,right-w-10)
+        y=max(top,min(y0,bottom-h-10))
         p.geometry(f'{w}x{h}+{x}+{y}')
         p.bind('<Escape>',lambda _: self.hide_settings())
-        c=tk.Canvas(p,width=w,height=h,bg=MASK,bd=0,highlightthickness=0)
+        c=ScaledCanvas(p,sk,width=w,height=h,bg=MASK,bd=0,highlightthickness=0)
         c.place(x=0,y=0)
         self.settings_root=p
         self.settings_canvas=c
@@ -1031,7 +1271,7 @@ class LimitDesk:
         c,p=self.settings_canvas,self.colors
         c.delete('all')
         self.settings_hit=[]
-        rounded(c,2,2,352,578,22,p['bg'],p['border'],2)
+        rounded(c,2,2,352,628,22,p['bg'],p['border'],2)
         text(c,23,20,'Tùy chỉnh widget',size=13,weight='bold',color=p['text'])
         text(c,331,17,'×',size=18,weight='bold',color=p['muted'],anchor='ne')
         self.settings_hit.append(((309,7,350,50),'close',None))
@@ -1084,8 +1324,9 @@ class LimitDesk:
             self.settings_hit.append(((x,387,x+72,418),'theme',tag))
         self.draw_switch(c,25,449,'Luôn nổi trên cùng',self.config['always_on_top'],'top')
         self.draw_switch(c,25,496,'Khởi động cùng Windows',self.config['autostart'],'autostart')
-        text(c,25,545,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
-        text(c,25,560,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
+        self.draw_switch(c,25,543,'Hiện biểu đồ token theo ngày',self.show_chart,'chart')
+        text(c,25,595,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
+        text(c,25,610,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
 
     def draw_switch(self,c,x,y,label_,enabled,action):
         p=self.colors
@@ -1097,13 +1338,15 @@ class LimitDesk:
         self.settings_hit.append(((18,y-13,335,y+30),action,None))
 
     def settings_click(self,event):
+        sk = self.settings_canvas.k if self.settings_canvas is not None else 1.0
+        ex, ey = event.x/sk, event.y/sk
         for (x1,y1,x2,y2),act,arg in self.settings_hit:
-            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+            if x1 <= ex <= x2 and y1 <= ey <= y2:
                 if act=='close':
                     self.hide_settings()
                 elif act=='opacity':
                     self.opacity_drag=True
-                    self.move_opacity(event.x)
+                    self.move_opacity(ex)
                 elif act=='provider':
                     self.toggle_provider(arg)
                 elif act=='interval':
@@ -1115,11 +1358,13 @@ class LimitDesk:
                     self.toggle_top()
                 elif act=='autostart':
                     self.toggle_autostart()
+                elif act=='chart':
+                    self.toggle_chart()
                 break
 
     def settings_drag(self,event):
-        if self.opacity_drag:
-            self.move_opacity(event.x)
+        if self.opacity_drag and self.settings_canvas is not None:
+            self.move_opacity(event.x/self.settings_canvas.k)
 
     def move_opacity(self,x):
         val=0.55 + clamp((x-26)/303,0,1)*0.45
@@ -1131,7 +1376,8 @@ class LimitDesk:
             from PIL import ImageGrab
             self.root.update()
             x,y=self.root.winfo_rootx(),self.root.winfo_rooty()
-            ImageGrab.grab(bbox=(x,y,x+self.width,y+self.height),all_screens=True).save(outfile)
+            ImageGrab.grab(bbox=(x,y,x+self.px(self.width),y+self.px(self.height)),
+                           all_screens=True).save(outfile)
         except Exception as exc:
             print(f'Screenshot unavailable: {type(exc).__name__}',file=sys.stderr)
 
@@ -1140,10 +1386,12 @@ class LimitDesk:
 
 
 def main():
+    global DPI_AWARE
     if sys.platform=='win32':
         try:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            DPI_AWARE = True
         except (AttributeError, OSError):
             pass
     parser=argparse.ArgumentParser(description='AI Limit Desk V5 — draggable window resizing')

@@ -20,7 +20,7 @@ DEFAULTS = {
     'interval': 30, 'always_on_top': True, 'compact': False,
     'opacity': 0.96, 'theme': 'dark',
     'visible_providers': DEFAULT_VISIBLE.copy(),
-    'chart_days': 7, 'chart_end': None,
+    'chart_days': 7, 'chart_end': None, 'show_chart': True,
     'x': None, 'y': None, 'autostart': False,
     'width': 440, 'height': None, 'manual_height': False,
 }
@@ -68,6 +68,7 @@ def load_settings() -> dict:
     values['visible_providers'] = valid_visible(values['visible_providers'])
     values['chart_days'] = allowed_chart_days(values['chart_days'])
     values['chart_end'] = normalize_chart_end(values['chart_end'])
+    values['show_chart'] = values['show_chart'] is not False
     if sys.platform == 'win32':
         values['autostart'] = get_autostart()
     return values

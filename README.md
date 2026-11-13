@@ -19,7 +19,8 @@ Dự án được viết bằng **Python và Tkinter**.
 - **Theo dõi quota:** hiển thị phần trăm còn lại và thời điểm reset theo cửa sổ hạn mức, chẳng hạn 5 giờ, hằng tuần hoặc theo model, tùy dữ liệu dịch vụ trả về.
 - **Tổng hợp nhiều dịch vụ:** mặc định hiển thị Codex và Claude Code; có thể bật Antigravity hoặc ẩn các dịch vụ không sử dụng.
 - **Lịch sử token:** biểu đồ cột chồng theo dịch vụ, có mốc 7 / 14 / 30 ngày, duyệt các giai đoạn hoặc chọn khoảng ngày trong lịch sử 90 ngày khi có dữ liệu.
-- **Widget linh hoạt:** kéo để di chuyển, thay đổi kích thước từ mép hoặc góc cửa sổ, tùy chọn luôn nổi trên cùng.
+- **Widget linh hoạt:** kéo để di chuyển, thay đổi kích thước từ mép hoặc góc cửa sổ, tùy chọn luôn nổi trên cùng. Giao diện tự thích ứng theo độ phân giải/DPI và chiều rộng cửa sổ, chữ luôn được cắt gọn thay vì đè lên nhau.
+- **Ẩn/hiện biểu đồ token:** bật hoặc tắt biểu đồ token theo ngày trong ⚙ Tùy chỉnh; khi tắt, widget thu gọn chỉ còn các thẻ quota.
 - **Tùy chỉnh giao diện:** chế độ sáng/tối, độ hiển thị từ 55% đến 100%, lưu vị trí và kích thước cửa sổ.
 - **Tự cập nhật:** mặc định mỗi 30 giây, có thể chọn 60 / 90 / 120 / 300 giây; hỗ trợ làm mới thủ công bằng `Ctrl+R`. Riêng Claude Code được kiểm tra thưa hơn, tối thiểu 3 phút/lần, vì endpoint quota của Anthropic giới hạn tần suất rất chặt.
 - **Khởi động cùng Windows:** bật/tắt trong phần cài đặt.

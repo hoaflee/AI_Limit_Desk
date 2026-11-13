@@ -1,5 +1,13 @@
 # Changelog
 
+## V5.2 - 13/11/2026
+
+- Thêm tùy chọn **Hiện biểu đồ token theo ngày** trong ⚙ Tùy chỉnh. Khi tắt, widget chỉ còn các thẻ quota, tự co chiều cao vừa khít (chỉ kéo đổi chiều rộng); bật lại thì khôi phục biểu đồ và chiều cao đã lưu. Lưu trong `settings.json` (`show_chart`).
+- Sửa chữ bị đè khi đổi kích thước / chạy trên màn hình có DPI khác nhau: font trước đây tính theo point (phình theo DPI) trong khi bố cục dùng pixel cố định. Nay toàn bộ giao diện (widget, Tùy chỉnh, hộp chọn ngày) vẽ theo "design pixel" rồi scale theo DPI thật của màn hình; kéo cửa sổ sang màn hình khác DPI sẽ tự dựng lại.
+- Văn bản được cắt `…` theo độ rộng đo thực tế thay vì số ký tự cố định: tiêu đề thẻ, nhãn quota, dòng reset, dòng "CŨ", chân trang, chú thích biểu đồ. Tổng token tự thu nhỏ, chú giải biểu đồ xếp theo chiều rộng, nhãn ngày thưa dần để không chạm nhau, nút chọn khoảng ngày tự rút gọn.
+- Sửa dòng reset lấn vào nhãn hàng kế tiếp ở mật độ `dense` (màn hình thấp): hàng dưới 36px dùng kiểu một dòng.
+- Panel Tùy chỉnh tự co nếu màn hình không đủ cao.
+
 ## V5.1 - 12/11/2026
 
 - Sửa Claude Code luôn hiện "Dữ liệu cũ": endpoint `oauth/usage` bị gọi mỗi 30 giây nên liên tục trả HTTP 429 và app không bao giờ ngừng gọi.

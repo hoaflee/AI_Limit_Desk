@@ -179,6 +179,180 @@ class WidgetUiTest(unittest.TestCase):
         self.assertFalse(app.is_visible('claude'))
         self.assertEqual([s.id for s in app.get_snapshots()],['codex','antigravity'])
 
+    # ---- show / hide the daily token chart --------------------------------
+    def _two_cards(self):
+        day=date.today().isoformat()
+        self.app.snapshots={
+            'codex':Snapshot('codex','Codex','CLI',status='ok',
+                quotas=[Quota('5-hour limit',80),Quota('Weekly limit',55)]),
+            'claude':Snapshot('claude','Claude Code','CLI',status='ok',
+                quotas=[Quota('Current session',75),Quota('Weekly limit',45)]),
+        }
+        self.app.local_daily={'claude':{day:22000},'codex':{day:900}}
+
+    def test_chart_can_be_hidden_from_settings_and_window_shrinks(self):
+        app=self.app
+        app.work_area=lambda:(0,0,1920,1040)
+        self._two_cards()
+        app.draw();app.root.update_idletasks()
+        full_height=app.height
+        self.assertTrue(app.chart_bars)
+        app.show_settings()
+        # The new switch sits right under "Khởi động cùng Windows".
+        hits=[(box,act) for box,act,_ in app.settings_hit if act=='chart']
+        self.assertEqual(len(hits),1)
+        (x1,y1,x2,y2),_=hits[0]
+        app.settings_click(SimpleNamespace(x=(x1+x2)//2,y=(y1+y2)//2))
+        app.root.update_idletasks()
+        self.assertFalse(app.show_chart)
+        self.assertFalse(app.config['show_chart'])
+        self.assertLess(app.height,full_height)
+        self.assertEqual(app.chart_bars,[])
+        self.assertEqual(app.chart_regions,[])
+        self.assertEqual(app.root.winfo_height(),app.height)
+        self.assertEqual(app.body.winfo_height(),app.doc_height)
+        shown=' '.join(app.body.itemcget(i,'text') for i in app.body.find_all()
+                       if app.body.type(i)=='text')
+        self.assertNotIn('TOKEN THEO NGÀY',shown)
+        self.assertIn('5-hour limit',shown)
+        app.toggle_chart()
+        app.root.update_idletasks()
+        self.assertTrue(app.show_chart)
+        self.assertEqual(app.height,full_height)
+        self.assertTrue(app.chart_bars)
+
+    def test_hidden_chart_keeps_saved_manual_height_for_later(self):
+        app=self.app
+        app.work_area=lambda:(0,0,1920,1040)
+        self._two_cards()
+        app.config.update({'manual_height':True,'height':880})
+        app.draw()
+        self.assertEqual(app.height,880)
+        app.toggle_chart()
+        self.assertLess(app.height,880)
+        self.assertEqual(app.config['height'],880)
+        app.toggle_chart()
+        self.assertEqual(app.height,880)
+
+    def test_hidden_chart_only_resizes_horizontally(self):
+        app=self.app
+        app.work_area=lambda:(0,0,1920,1040)
+        self._two_cards()
+        app.config['show_chart']=False
+        app.draw();app.root.update()
+        w,h=app.width,app.height
+        self.assertEqual(app.resize_handle(w-3,h-3),'e')
+        self.assertEqual(app.resize_handle(w/2,h-3),'')
+        self.assertEqual(app.resize_handle(w-3,h/2),'e')
+        app.header_click(SimpleNamespace(x=w-3,y=h-3,x_root=700,y_root=850))
+        app.header_drag(SimpleNamespace(x_root=780,y_root=950))
+        app.header_release(SimpleNamespace())
+        app.root.update_idletasks()
+        self.assertGreater(app.width,w)
+        self.assertEqual(app.height,h)
+        self.assertFalse(app.config['manual_height'])
+
+    # ---- responsive layout --------------------------------------------------
+    def _text_boxes(self,canvas):
+        boxes=[]
+        for item in canvas.find_all():
+            if canvas.type(item)=='text' and canvas.itemcget(item,'text').strip():
+                boxes.append((canvas.itemcget(item,'text'),canvas.bbox(item)))
+        return boxes
+
+    def _assert_clean(self,label,overlaps=True):
+        app=self.app
+        app.root.update_idletasks()
+        for name,canvas in (('body',app.body),('frame',app.frame)):
+            boxes=self._text_boxes(canvas)
+            self.assertTrue(boxes)
+            limit=int(canvas.cget('width'))
+            for text_,(l,t,r,b) in boxes:
+                self.assertGreaterEqual(l,0,f'{label} {name}: {text_!r} left')
+                self.assertLessEqual(r,limit+1,f'{label} {name}: {text_!r} spills right')
+            if not overlaps:   # a tooltip is a popover: it may cover chart text on purpose
+                continue
+            # 2 px shrink ignores the canvas' own bbox padding.
+            for i,(ta,(l1,t1,r1,b1)) in enumerate(boxes):
+                for tb,(l2,t2,r2,b2) in boxes[i+1:]:
+                    overlap=(min(r1,r2)-2 > max(l1,l2)+2 and min(b1,b2)-2 > max(t1,t2)+2)
+                    self.assertFalse(overlap,f'{label} {name}: {ta!r} overlaps {tb!r}')
+
+    def test_no_overlapping_text_across_widths_dpi_and_heights(self):
+        app=self.app
+        app.work_area=lambda:(0,0,3000,1800)
+        day=date.today()
+        app.snapshots={
+            'codex':Snapshot('codex','OpenAI · Codex / Work','CLI',status='ok',
+                quotas=[Quota('5-hour limit',89),Quota('Weekly limit on all of the models',67)]),
+            'claude':Snapshot('claude','Claude Code with a very long title here','CLI',
+                status='stale',message='Bị giới hạn tần suất (HTTP 429) khi đọc dữ liệu',
+                quotas=[Quota('Current session (Sonnet + Opus)',70),
+                        Quota('Weekly · all models and others',33)]),
+            'custom_x':Snapshot('custom_x','Một dịch vụ tùy chỉnh rất dài','JSON',status='ok',
+                quotas=[Quota('Daily',50)],
+                daily_tokens={(day-timedelta(days=i)).isoformat():4_000_000 for i in range(30)}),
+        }
+        app.local_daily={
+            'claude':{(day-timedelta(days=i)).isoformat():123_456_789*(i%5+1) for i in range(30)},
+            'codex':{(day-timedelta(days=i)).isoformat():9_000_000 for i in range(30)}}
+        for k in (1.0,1.75,2.5):
+            app.detect_scale=lambda k=k:k
+            app.apply_scale(k)
+            for chart in (True,False):
+                app.config['show_chart']=chart
+                for width in (390,440,700,1100):
+                    for manual in (None,10):
+                        app.width=width
+                        app.config['manual_height']=manual is not None
+                        app.config['height']=manual
+                        app.chart_hover=None
+                        for days in (7,30):
+                            app.config['chart_days']=days
+                            app.draw()
+                            self._assert_clean(f'k={k} chart={chart} w={width} h={manual} d={days}')
+                        # Tooltip over a bar must also stay inside the window.
+                        if chart and app.chart_bars:
+                            app.chart_hover=app.chart_bars[-1][2]
+                            app.draw_body()
+                            self._assert_clean(f'tooltip k={k} w={width}',overlaps=False)
+                            app.chart_hover=None
+
+    def test_window_scales_with_dpi_without_changing_design_layout(self):
+        app=self.app
+        app.work_area=lambda:(0,0,3000,1800)
+        self._two_cards()
+        app.draw();app.root.update_idletasks()
+        w1,h1,design_w,design_h=app.root.winfo_width(),app.root.winfo_height(),app.width,app.height
+        app.detect_scale=lambda:2.0
+        app.apply_scale(2.0)
+        app.root.update_idletasks()
+        self.assertEqual((app.width,app.height),(design_w,design_h))
+        self.assertEqual(app.root.winfo_width(),2*w1)
+        self.assertEqual(app.root.winfo_height(),2*h1)
+        self.assertEqual(app.body.winfo_height(),app.px(app.doc_height))
+        # Clicking in physical pixels maps back onto the design-pixel hit areas.
+        before=app.config['chart_days']
+        x1,y1,x2,y2,_=[r for r in app.chart_regions if r[4]=='days'][0]
+        app.body_click(SimpleNamespace(x=int((x1+x2)/2*2),y=int((y1+y2)/2*2)))
+        self.assertNotEqual(app.config['chart_days'],before)
+
+    def test_manual_width_and_height_survive_resize_at_high_dpi(self):
+        app=self.app
+        app.work_area=lambda:(0,0,3000,1800)
+        self._two_cards()
+        app.detect_scale=lambda:1.5
+        app.apply_scale(1.5)
+        app.root.update()
+        pw,ph=app.px(app.width),app.px(app.height)
+        app.header_click(SimpleNamespace(x=pw-3,y=ph-3,x_root=900,y_root=900))
+        app.header_drag(SimpleNamespace(x_root=1050,y_root=1000))
+        app.header_release(SimpleNamespace())
+        app.root.update_idletasks()
+        self.assertEqual(app.width,max(main.MIN_WIDTH,round((pw+150)/1.5)))
+        self.assertEqual(app.root.winfo_width(),app.px(app.width))
+        self._assert_clean('after high dpi drag')
+
 
 @unittest.skipUnless(os.environ.get('DISPLAY') or sys.platform == 'win32',
                      'No Tk display available')
