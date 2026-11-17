@@ -75,3 +75,25 @@ def fit_layout(cards: Iterable[tuple[int, bool]], available_height: int,
             return candidate, h
     minimum = PROFILES[-1]
     return minimum, minimum.window_height(specs, show_chart)
+
+
+# ---- Minimal mode: no header/footer/chart, one thin row per quota ------------
+MINI_MARGIN = 4      # left/right inset of the body canvas inside the frame
+MINI_TOP = 3         # top/bottom inset (keeps the body inside the rounded corners)
+MINI_PAD = 3         # padding inside the body above the first / below the last row
+MINI_HEAD = 14       # provider heading line
+MINI_ROW = 17        # label + percentage line with a 3px track below it
+MINI_GAP = 4         # between providers
+MINI_EMPTY = 24      # "no service enabled" notice
+
+
+def mini_body_height(cards: Iterable[tuple[int, bool]]) -> int:
+    specs = list(cards)
+    if not specs:
+        return 2 * MINI_PAD + MINI_EMPTY
+    rows = sum(MINI_HEAD + max(1, n) * MINI_ROW for n, _ in specs)
+    return 2 * MINI_PAD + rows + MINI_GAP * (len(specs) - 1)
+
+
+def mini_window_height(cards: Iterable[tuple[int, bool]]) -> int:
+    return mini_body_height(cards) + 2 * MINI_TOP

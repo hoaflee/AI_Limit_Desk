@@ -21,6 +21,8 @@ Dự án được viết bằng **Python và Tkinter**.
 - **Lịch sử token:** biểu đồ cột chồng theo dịch vụ, có mốc 7 / 14 / 30 ngày, duyệt các giai đoạn hoặc chọn khoảng ngày trong lịch sử 90 ngày khi có dữ liệu.
 - **Widget linh hoạt:** kéo để di chuyển, thay đổi kích thước từ mép hoặc góc cửa sổ, tùy chọn luôn nổi trên cùng. Giao diện tự thích ứng theo độ phân giải/DPI và chiều rộng cửa sổ, chữ luôn được cắt gọn thay vì đè lên nhau.
 - **Ẩn/hiện biểu đồ token:** bật hoặc tắt biểu đồ token theo ngày trong ⚙ Tùy chỉnh; khi tắt, widget thu gọn chỉ còn các thẻ quota.
+- **Chiều rộng tối thiểu tùy chỉnh:** thanh trượt trong ⚙ Tùy chỉnh (240–600 px, mặc định 390 px) quyết định cửa sổ có thể kéo hẹp tới đâu.
+- **Chế độ tối giản:** chỉ còn tên dịch vụ, nhãn quota, phần trăm, thanh tiến độ và thời gian reset (nếu đủ chỗ) trên diện tích rất nhỏ; kéo hẹp tới 110 px.
 - **Tùy chỉnh giao diện:** chế độ sáng/tối, độ hiển thị từ 55% đến 100%, lưu vị trí và kích thước cửa sổ.
 - **Tự cập nhật:** mặc định mỗi 30 giây, có thể chọn 60 / 90 / 120 / 300 giây; hỗ trợ làm mới thủ công bằng `Ctrl+R`. Riêng Claude Code được kiểm tra thưa hơn, tối thiểu 3 phút/lần, vì endpoint quota của Anthropic giới hạn tần suất rất chặt.
 - **Khởi động cùng Windows:** bật/tắt trong phần cài đặt.
@@ -71,6 +73,7 @@ python -m venv .venv
 - Nhấp đúp góc dưới bên phải để trở về kích thước mặc định và tự điều chỉnh chiều cao.
 - Dùng các nút trên biểu đồ để chọn số ngày, lùi/tiến giai đoạn hoặc chọn khoảng ngày cụ thể.
 - Nhấn `Ctrl+R` để làm mới dữ liệu.
+- Bật/tắt **Chế độ tối giản** trong ⚙ Tùy chỉnh hoặc nhấp chuột phải vào widget. Ở chế độ này kéo ở bất kỳ đâu để di chuyển, kéo mép trái/phải để đổi chiều rộng, nhấp đúp để quay lại chế độ đầy đủ (nhấp đúp mép để đặt lại chiều rộng), nhấp chuột phải để mở menu (làm mới, tùy chỉnh, đóng).
 
 Chiều rộng tối thiểu là 390 px. Chiều cao tối thiểu phụ thuộc nội dung quota và biểu đồ; với màn hình nhỏ, có thể ẩn bớt dịch vụ trong cài đặt.
 

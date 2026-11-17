@@ -1,5 +1,11 @@
 # Changelog
 
+## V5.3 - 17/11/2026
+
+- Cho phép đổi **chiều rộng tối thiểu** của widget (trước đây cố định 390 px): thanh trượt trong ⚙ Tùy chỉnh, 240–600 px, bước 10 px. Lưu trong `settings.json` (`min_width`). Tiêu đề header tự cắt `…` khi cửa sổ hẹp.
+- Thêm **chế độ tối giản**: không header, footer, biểu đồ; mỗi dịch vụ một dòng tiêu đề nhỏ, mỗi quota một dòng nhãn + phần trăm + thanh 3 px (kèm thời gian reset khi đủ rộng). Cao khoảng 1/4 widget thường, kéo hẹp tới 110 px. Chiều rộng riêng, lưu ở `mini_width`; bật/tắt bằng `minimal`.
+- Chế độ tối giản: kéo bất kỳ đâu để di chuyển, kéo mép để đổi chiều rộng, nhấp đúp để thoát, chuột phải mở menu (tối giản, làm mới, tùy chỉnh, đóng). Menu chuột phải cũng dùng được ở chế độ thường.
+
 ## V5.2 - 13/11/2026
 
 - Thêm tùy chọn **Hiện biểu đồ token theo ngày** trong ⚙ Tùy chỉnh. Khi tắt, widget chỉ còn các thẻ quota, tự co chiều cao vừa khít (chỉ kéo đổi chiều rộng); bật lại thì khôi phục biểu đồ và chiều cao đã lưu. Lưu trong `settings.json` (`show_chart`).

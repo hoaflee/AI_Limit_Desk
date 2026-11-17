@@ -71,3 +71,19 @@ class LayoutTest(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class MiniLayoutTest(unittest.TestCase):
+    def test_minimal_is_far_smaller_than_any_full_layout(self):
+        from layout import mini_window_height
+        cards = [(2, False), (2, False)]
+        self.assertLess(mini_window_height(cards),
+                        PROFILES[-1].window_height(cards, show_chart=False) // 2)
+
+    def test_minimal_height_grows_per_quota_and_handles_empty(self):
+        from layout import MINI_ROW, mini_window_height
+        one = mini_window_height([(1, False)])
+        self.assertEqual(mini_window_height([(2, False)]) - one, MINI_ROW)
+        self.assertGreater(mini_window_height([]), 0)
+        # A provider without quotas still reserves a row for its message.
+        self.assertEqual(mini_window_height([(0, False)]), one)

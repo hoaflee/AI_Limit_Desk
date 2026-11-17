@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from providers import Snapshot
+from resize import DEFAULT_MINI_WIDTH, MINI_MIN_WIDTH, MIN_WIDTH, clamp_min_width
 from view_state import (DEFAULT_VISIBLE, allowed_chart_days,
                         normalize_chart_end, valid_visible)
 
@@ -23,6 +24,7 @@ DEFAULTS = {
     'chart_days': 7, 'chart_end': None, 'show_chart': True,
     'x': None, 'y': None, 'autostart': False,
     'width': 440, 'height': None, 'manual_height': False,
+    'min_width': MIN_WIDTH, 'minimal': False, 'mini_width': DEFAULT_MINI_WIDTH,
 }
 
 
@@ -55,10 +57,16 @@ def load_settings() -> dict:
         values['opacity'] = max(0.55, min(1.0, round(float(values['opacity']), 2)))
     except (ValueError, TypeError):
         values['opacity'] = 0.96
+    values['min_width'] = clamp_min_width(values['min_width'])
     try:
-        values['width'] = max(390, min(2500, int(values['width'])))
+        values['width'] = max(values['min_width'], min(2500, int(values['width'])))
     except (TypeError, ValueError, OverflowError):
-        values['width'] = 440
+        values['width'] = max(values['min_width'], 440)
+    try:
+        values['mini_width'] = max(MINI_MIN_WIDTH, min(2500, int(values['mini_width'])))
+    except (TypeError, ValueError, OverflowError):
+        values['mini_width'] = DEFAULT_MINI_WIDTH
+    values['minimal'] = values['minimal'] is True
     try:
         values['height'] = max(1, min(2400, int(values['height']))) if values['height'] is not None else None
     except (TypeError, ValueError, OverflowError):

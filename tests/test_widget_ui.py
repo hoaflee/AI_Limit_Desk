@@ -353,6 +353,103 @@ class WidgetUiTest(unittest.TestCase):
         self.assertEqual(app.root.winfo_width(),app.px(app.width))
         self._assert_clean('after high dpi drag')
 
+    def test_min_width_setting_controls_resize_limit(self):
+        app=self.app
+        app.work_area=lambda:(0,0,3000,1800)
+        self._two_cards()
+        app.set_min_width(300)
+        self.assertEqual(app.config['min_width'],300)
+        self.assertEqual(app.min_w,300)
+        w,h=app.width,app.height
+        app.header_click(SimpleNamespace(x=w-3,y=h/2,x_root=900,y_root=500))
+        app.header_drag(SimpleNamespace(x_root=-2000,y_root=500))
+        app.header_release(SimpleNamespace())
+        app.root.update_idletasks()
+        self.assertEqual(app.width,300)
+        self.assertEqual(app.root.winfo_width(),app.px(300))
+        self._assert_clean('narrow width')
+        # Raising the minimum widens a narrower window right away.
+        app.set_min_width(500)
+        self.assertEqual(app.width,500)
+
+    def test_min_width_slider_in_settings(self):
+        app=self.app
+        app.show_settings()
+        hits=[box for box,act,_ in app.settings_hit if act=='minw']
+        self.assertEqual(len(hits),1)
+        x1,y1,x2,y2=hits[0]
+        app.settings_click(SimpleNamespace(x=x1+1,y=(y1+y2)//2))
+        self.assertEqual(app.config['min_width'],240)
+        app.settings_drag(SimpleNamespace(x=x2+50,y=(y1+y2)//2))
+        self.assertEqual(app.config['min_width'],600)
+        app.settings_release(SimpleNamespace())
+        self.assertFalse(app.minw_drag)
+
+    def test_minimal_mode_is_tiny_and_toggles_back(self):
+        app=self.app
+        app.work_area=lambda:(0,0,1920,1040)
+        self._two_cards()
+        app.draw();app.root.update()
+        full_w,full_h=app.width,app.height
+        app.toggle_minimal()
+        app.root.update()
+        self.assertTrue(app.minimal)
+        self.assertTrue(app.config['minimal'])
+        self.assertEqual(app.width,190)
+        self.assertLess(app.height,full_h//3)
+        self.assertEqual(app.root.winfo_width(),app.px(app.width))
+        self.assertEqual(app.root.winfo_height(),app.px(app.height))
+        self.assertEqual(app.body.winfo_height(),app.px(app.doc_height))
+        self.assertLessEqual(app.body.bbox('all')[3],app.body.winfo_height())
+        self.assertEqual(app.chart_bars,[])
+        self.assertEqual(app.config['width'],full_w)
+        # Only width is resizable; it can go as narrow as MINI_MIN_WIDTH.
+        w,h=app.width,app.height
+        self.assertEqual(app.resize_handle(w-2,h/2),'e')
+        self.assertEqual(app.resize_handle(w/2,h-2),'')
+        app.body_click(SimpleNamespace(x=app.px(w-app.margin-2),y=app.px(h/2),x_root=900,y_root=500))
+        app.body_drag(SimpleNamespace(x=0,y=0,x_root=-3000,y_root=500))
+        app.body_release(SimpleNamespace(x=0,y=0,x_root=-3000,y_root=500))
+        app.root.update_idletasks()
+        self.assertEqual(app.width,110)
+        self.assertEqual(app.config['mini_width'],110)
+        self.assertEqual(app.root.winfo_width(),app.px(110))
+        self.assertLessEqual(app.body.bbox('all')[3],app.body.winfo_height())
+        # Double click anywhere else returns to the full widget at its old size.
+        app.body_double_click(SimpleNamespace(x=app.px(40),y=app.px(20),x_root=0,y_root=0))
+        app.root.update()
+        self.assertFalse(app.minimal)
+        self.assertEqual((app.width,app.height),(full_w,full_h))
+        self.assertEqual(app.config['mini_width'],110)
+
+    def test_minimal_mode_dragging_moves_window_and_shows_all_quotas(self):
+        app=self.app
+        app.work_area=lambda:(0,0,1920,1040)
+        self._two_cards()
+        app.toggle_minimal()
+        app.root.update()
+        texts=[app.body.itemcget(i,'text') for i in app.body.find_all()
+               if app.body.type(i)=='text']
+        for label in ('Codex','Claude','5-hour limit','Current session','80%','55%','75%','45%'):
+            self.assertTrue(any(label in t for t in texts),label)
+        x0=app.root.winfo_x()
+        app.body_click(SimpleNamespace(x=app.px(40),y=app.px(20),x_root=500,y_root=500))
+        app.body_drag(SimpleNamespace(x=0,y=0,x_root=560,y_root=530))
+        app.body_release(SimpleNamespace(x=0,y=0,x_root=560,y_root=530))
+        app.root.update_idletasks()
+        self.assertEqual(app.root.winfo_x(),x0+60)
+
+    def test_minimal_setting_is_restored_on_launch(self):
+        app=self.app
+        app.toggle_minimal()
+        saved=dict(app.config)
+        app.quit()
+        with patch.object(main,'load_settings',return_value=saved):
+            self.app=main.LimitDesk()
+        self.assertTrue(self.app.minimal)
+        self.assertEqual(self.app.width,190)
+        self.assertEqual(self.app.layout,main.MINI)
+
 
 @unittest.skipUnless(os.environ.get('DISPLAY') or sys.platform == 'win32',
                      'No Tk display available')

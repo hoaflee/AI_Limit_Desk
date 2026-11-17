@@ -7,8 +7,22 @@ from typing import Iterable
 from layout import PROFILES, Layout, fit_layout
 
 DEFAULT_WIDTH = 440
-MIN_WIDTH = 390
+MIN_WIDTH = 390            # default minimum width of the full widget
+MIN_WIDTH_FLOOR = 240      # smallest minimum the user may choose
+MIN_WIDTH_CEIL = 600       # largest minimum the user may choose
+DEFAULT_MINI_WIDTH = 190
+MINI_MIN_WIDTH = 110       # minimal mode can be dragged this narrow
 EDGE_PIXELS = 11
+MINI_EDGE_PIXELS = 6
+
+
+def clamp_min_width(raw) -> int:
+    """User-chosen minimum width of the full widget, in design pixels."""
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError, OverflowError):
+        return MIN_WIDTH
+    return max(MIN_WIDTH_FLOOR, min(MIN_WIDTH_CEIL, value))
 
 
 @dataclass(frozen=True)
@@ -19,13 +33,14 @@ class WindowRect:
     height: int
 
 
-def hit_test_resize(x: int, y: int, width: int, height: int) -> str:
+def hit_test_resize(x: int, y: int, width: int, height: int,
+                    edge: int = EDGE_PIXELS, corner: int = 26) -> str:
     """Named sides/corners; interior is not a resize target."""
     # A generous bottom-right corner target matches the drawn diagonal grip.
-    if x >= width-26 and y >= height-26:
+    if x >= width-corner and y >= height-corner:
         return 'se'
-    horiz = 'w' if x <= EDGE_PIXELS else ('e' if x >= width - EDGE_PIXELS else '')
-    vert = 'n' if y <= EDGE_PIXELS else ('s' if y >= height - EDGE_PIXELS else '')
+    horiz = 'w' if x <= edge else ('e' if x >= width - edge else '')
+    vert = 'n' if y <= edge else ('s' if y >= height - edge else '')
     return vert + horiz if vert else horiz
 
 

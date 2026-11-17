@@ -13,6 +13,7 @@ import sys
 import threading
 import tkinter as tk
 import webbrowser
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -27,9 +28,12 @@ from storage import (APP_DIR, CUSTOM_PATH, LOGO_DIR, ensure_dir, load_cache,
                      sync_autostart_command)
 from token_history import LocalTokenHistory
 from logos import download_logos
-from layout import HEADER_HEIGHT, FOOTER_HEIGHT
-from resize import (DEFAULT_WIDTH, MIN_WIDTH, WindowRect, hit_test_resize,
-                    layout_for_size, minimum_height, resize_rect)
+from layout import (HEADER_HEIGHT, FOOTER_HEIGHT, MINI_GAP, MINI_HEAD, MINI_MARGIN,
+                    MINI_PAD, MINI_ROW, MINI_TOP, mini_window_height)
+from resize import (DEFAULT_MINI_WIDTH, DEFAULT_WIDTH, MIN_WIDTH,
+                    MIN_WIDTH_CEIL, MIN_WIDTH_FLOOR, MINI_EDGE_PIXELS, MINI_MIN_WIDTH,
+                    WindowRect, clamp_min_width, hit_test_resize, layout_for_size,
+                    minimum_height, resize_rect)
 from view_state import (BASE_KEYS, HISTORY_DAYS, PRESET_DAYS, chart_window,
                         choose_custom, move_window)
 
@@ -37,6 +41,8 @@ WIDTH = DEFAULT_WIDTH
 HEADER_H = HEADER_HEIGHT
 FOOTER_H = FOOTER_HEIGHT
 MARGIN = 11
+SETTINGS_H = 760  # design-pixel height of the Tùy chỉnh panel
+MINI = 'minimal'  # sentinel stored in LimitDesk.layout while in minimal mode
 # Rows shorter than this cannot hold label + reset + track on separate lines.
 COMPACT_ROW_BELOW = 36
 MASK = '#ff00ff'
@@ -242,10 +248,11 @@ class LimitDesk:
         self.settings_canvas = None
         self.settings_hit = []
         self.opacity_drag = False
+        self.minw_drag = False
         # Legacy compact preference is ignored: V5 always shows the entire body.
         self.config['compact'] = False
         self.height = 0
-        self.width = int(self.config.get("width", WIDTH))
+        self.width = int(self.config.get('mini_width' if self.minimal else 'width', WIDTH))
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -261,13 +268,11 @@ class LimitDesk:
         self.apply_opacity()
         self.k = self.detect_scale()
         left, top, right, bottom = self.work_area()
-        self.width = max(MIN_WIDTH, min(self.width, max(MIN_WIDTH, (right-left)/self.k-16)))
+        lo = self.min_w
+        self.width = max(lo, min(self.width, max(lo, (right-left)/self.k-16)))
         self.width = int(self.width)
-        self.config['width'] = self.width
-        cards = self.card_specs()
-        requested_height = self.config.get('height') if self.config.get('manual_height') else None
-        self.layout, self.height = layout_for_size(cards, self.avail_height(), requested_height,
-                                                   self.show_chart)
+        self.config['mini_width' if self.minimal else 'width'] = self.width
+        self.layout, self.height = self.compute_layout()
         x = self.config.get('x')
         y = self.config.get('y')
         pw, ph = self.px(self.width), self.px(self.height)
@@ -284,17 +289,23 @@ class LimitDesk:
         self.frame = ScaledCanvas(self.root, self.k, width=pw, height=ph, bg=MASK,
                                   highlightthickness=0, bd=0)
         self.frame.place(x=0, y=0)
-        self.body = ScaledCanvas(self.root, self.k, width=self.px(self.width-2*MARGIN),
-                                 height=self.px(self.height-HEADER_H-FOOTER_H),
+        self.body = ScaledCanvas(self.root, self.k, width=self.px(self.width-2*self.margin),
+                                 height=self.px(self.height-self.header_h-self.footer_h),
                                  bg=self.colors['bg'], highlightthickness=0, bd=0)
-        self.body.place(x=self.px(MARGIN), y=self.px(HEADER_H))
+        self.body.place(x=self.px(self.margin), y=self.px(self.header_h))
+        self.menu = None
 
         self.frame.bind('<Button-1>', self.header_click)
         self.frame.bind('<B1-Motion>', self.header_drag)
         self.frame.bind('<ButtonRelease-1>', self.header_release)
         self.frame.bind('<Motion>', self.frame_move)
         self.frame.bind('<Double-Button-1>', self.frame_double_click)
+        self.frame.bind('<Button-3>', self.show_menu)
         self.body.bind('<Button-1>', self.body_click)
+        self.body.bind('<B1-Motion>', self.body_drag)
+        self.body.bind('<ButtonRelease-1>', self.body_release)
+        self.body.bind('<Double-Button-1>', self.body_double_click)
+        self.body.bind('<Button-3>', self.show_menu)
         self.body.bind('<Motion>', self.body_move)
         self.body.bind('<Leave>', self.body_leave)
         self.root.bind('<Control-r>', lambda _: self.refresh(manual=True))
@@ -347,6 +358,35 @@ class LimitDesk:
     @property
     def show_chart(self) -> bool:
         return self.config.get('show_chart', True) is not False
+
+    @property
+    def minimal(self) -> bool:
+        return self.config.get('minimal') is True
+
+    @property
+    def min_w(self) -> int:
+        """Narrowest width (design px) the current mode may be dragged to."""
+        return MINI_MIN_WIDTH if self.minimal else clamp_min_width(self.config.get('min_width'))
+
+    @property
+    def margin(self) -> int:
+        return MINI_MARGIN if self.minimal else MARGIN
+
+    @property
+    def header_h(self) -> int:
+        return MINI_TOP if self.minimal else HEADER_H
+
+    @property
+    def footer_h(self) -> int:
+        return MINI_TOP if self.minimal else FOOTER_H
+
+    def compute_layout(self):
+        """(layout, window height) for the current mode; minimal has a single density."""
+        cards = self.card_specs()
+        if self.minimal:
+            return MINI, mini_window_height(cards)
+        height_pref = self.config.get('height') if self.config.get('manual_height') else None
+        return layout_for_size(cards, self.avail_height(), height_pref, self.show_chart)
 
     def px(self, value: float) -> int:
         """Design pixels -> device pixels for the current monitor."""
@@ -426,10 +466,7 @@ class LimitDesk:
     def reflow(self) -> bool:
         """Auto-size by default, but respect the user's saved mouse resize."""
         left, top, right, bottom = self.work_area()
-        cards = self.card_specs()
-        height_pref = self.config.get('height') if self.config.get('manual_height') else None
-        layout, height = layout_for_size(cards, self.avail_height(), height_pref,
-                                         self.show_chart)
+        layout, height = self.compute_layout()
         if (layout == self.layout and height == self.height
                 and self.render_width == self.width and self.render_k == self.k):
             return False
@@ -441,15 +478,15 @@ class LimitDesk:
         y = max(top+8, min(int(self.root.winfo_y()), bottom-ph-8))
         self.root.geometry(f'{pw}x{ph}+{x}+{y}')
         self.frame.configure(width=pw, height=ph)
-        self.body.configure(width=self.px(self.width-2*MARGIN),
-                            height=self.px(height-HEADER_H-FOOTER_H))
-        self.body.place(x=self.px(MARGIN), y=self.px(HEADER_H))
-        if self.config.get('manual_height') and self.show_chart:
+        self.body.configure(width=self.px(self.width-2*self.margin),
+                            height=self.px(height-self.header_h-self.footer_h))
+        self.body.place(x=self.px(self.margin), y=self.px(self.header_h))
+        if self.config.get('manual_height') and self.show_chart and not self.minimal:
             self.config['height'] = height
         return True
 
     def persist(self):
-        self.config['width'] = self.width
+        self.config['mini_width' if self.minimal else 'width'] = self.width
         self.config['x'] = int(self.root.winfo_x())
         self.config['y'] = int(self.root.winfo_y())
         try:
@@ -496,6 +533,43 @@ class LimitDesk:
         self.persist()
         self.draw()
         self.draw_settings()
+
+    def toggle_minimal(self):
+        """Switch between the full widget and the tiny read-only quota strip."""
+        self.persist()  # remember the current mode's width before swapping
+        self.config['minimal'] = not self.minimal
+        self.width = int(self.config['mini_width'] if self.minimal else self.config['width'])
+        left, _, right, _ = self.work_area()
+        self.width = int(max(self.min_w, min(self.width, max(self.min_w, (right-left)/self.k-16))))
+        self.chart_hover = None
+        self.draw()
+        self.persist()
+        self.draw_settings()
+
+    def set_min_width(self, value):
+        """Narrowest the full widget may be dragged to; widens it if currently narrower."""
+        self.config['min_width'] = clamp_min_width(round(value / 10) * 10)
+        if not self.minimal and self.width < self.config['min_width']:
+            self.width = self.config['min_width']
+            self.draw()
+        self.persist()
+        self.draw_settings()
+
+    def show_menu(self, event):
+        if self.menu is None:
+            self.menu = tk.Menu(self.root, tearoff=0)
+        m = self.menu
+        m.delete(0, 'end')
+        m.add_command(label='Thoát chế độ tối giản' if self.minimal else 'Chế độ tối giản',
+                      command=self.toggle_minimal)
+        m.add_command(label='Làm mới  (Ctrl+R)', command=lambda: self.refresh(manual=True))
+        m.add_command(label='Tùy chỉnh…', command=self.show_settings)
+        m.add_separator()
+        m.add_command(label='Đóng', command=self.quit)
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
 
     def set_chart_days(self, days: int):
         self.config['chart_days'] = days
@@ -779,8 +853,13 @@ class LimitDesk:
         c = self.frame
         p = self.colors
         c.delete('all')
+        if self.minimal:
+            rounded(c,1,1,self.width-1,self.height-1,8,p['bg'],p['border'],1)
+            return
         rounded(c,2,2,self.width-2,self.height-2,24,p['bg'],p['border'],2)
-        text(c,23,17,'HẠN MỨC  +  TOKEN',size=10,weight='bold',color=p['text'])
+        tools_left = self.width-137
+        text(c,23,17,self.fit('HẠN MỨC  +  TOKEN',10,'bold',tools_left-23-8),
+             size=10,weight='bold',color=p['text'])
         tools = [(self.width-123,'↻'),(self.width-85,'☼' if self.config['theme']=='dark' else '☾'),
                  (self.width-47,'⚙'), (self.width-15,'×')]
         for x,symbol in tools:
@@ -814,7 +893,28 @@ class LimitDesk:
                           self.width-8,self.height-10-delta,
                           fill=p['quiet'],width=1)
 
+    def _frame_event(self, event):
+        """Body-canvas event expressed in frame coordinates (device pixels)."""
+        return SimpleNamespace(x=event.x+self.px(self.margin), y=event.y+self.px(self.header_h),
+                               x_root=event.x_root, y_root=event.y_root)
+
+    def body_drag(self, event):
+        if self.minimal:
+            self.header_drag(self._frame_event(event))
+
+    def body_release(self, event):
+        if not self.minimal:
+            return
+        self.header_release(event)
+
+    def body_double_click(self, event):
+        if self.minimal:
+            self.frame_double_click(self._frame_event(event))
+
     def body_click(self, event):
+        if self.minimal:
+            self.header_click(self._frame_event(event))
+            return
         ex, ey = event.x / self.k, event.y / self.k
         for x1,y1,x2,y2,action in self.chart_regions:
             if x1 <= ex <= x2 and y1 <= ey <= y2:
@@ -834,6 +934,9 @@ class LimitDesk:
                 break
 
     def body_move(self,event):
+        if self.minimal:
+            self.frame_move(self._frame_event(event), self.body)
+            return
         ex, ey = event.x / self.k, event.y / self.k
         nextday = None
         for x1,x2,day in self.chart_bars:
@@ -858,6 +961,11 @@ class LimitDesk:
         self.chart_regions = []
         self.chart_bars = []
         self.chart_hover_bounds = (0, 0)
+        if self.minimal:
+            self.draw_mini()
+            self.stale_signature_drawn = self.stale_signature()
+            self.doc_height = self.height - self.header_h - self.footer_h
+            return
         y_abs = self.draw_quotas()
         if self.show_chart:
             self.draw_tokens(y_abs)
@@ -865,6 +973,51 @@ class LimitDesk:
         self.doc_height = self.layout.body_height(
             [(len(s.quotas), s.status == 'stale') for s in self.get_snapshots()],
             self.show_chart)
+
+    def draw_mini(self):
+        """Minimal mode: provider heading + one thin label/percent/track row per quota."""
+        c, p = self.body, self.colors
+        sw = self.width - 2*MINI_MARGIN
+        selected = self.get_snapshots()
+        y = MINI_PAD
+        if not selected:
+            text(c,8,y+4,self.fit('Chưa bật dịch vụ nào',8,'normal',sw-16),
+                 size=8,color=p['muted'])
+            return
+        names = {'codex': 'Codex', 'claude': 'Claude', 'antigravity': 'Antigravity'}
+        for s in selected:
+            stale = s.status == 'stale'
+            tag = 'CŨ' if stale else ('—' if s.status != 'ok' else '')
+            tag_color = '#E2AB59' if stale else p['quiet']
+            tag_w = self.tw(tag, 7, 'bold') if tag else 0
+            c.create_oval(8,y+4,13,y+9,fill=COLOR.get(s.id,'#967DE0'),outline='')
+            text(c,17,y,self.fit(names.get(s.id,s.title),8,'bold',sw-17-8-tag_w-(6 if tag else 0)),
+                 size=8,weight='bold',color=p['text'])
+            if tag:
+                text(c,sw-8,y+1,tag,size=7,weight='bold',color=tag_color,anchor='ne')
+            y += MINI_HEAD
+            if not s.quotas:
+                text(c,8,y,self.fit(s.message or 'Chưa có số liệu',8,'normal',sw-16),
+                     size=8,color=p['muted'])
+                y += MINI_ROW
+            for q in s.quotas:
+                pct = fmt_percent(q.left)
+                pct_w = self.tw(pct, 8, 'bold')
+                reset_s = compact_reset(q.reset_at)
+                reset_w = self.tw(reset_s, 7)
+                label_room = sw - 16 - pct_w - 8
+                # The reset time is shown only when the label still keeps a usable width.
+                show_reset = label_room - reset_w - 8 >= 52
+                if show_reset:
+                    text(c,sw-8-pct_w-8,y+1,reset_s,size=7,color=p['muted'],anchor='ne')
+                    label_room -= reset_w + 8
+                text(c,8,y,self.fit(q.label,8,'normal',label_room),size=8,color=p['text'])
+                text(c,sw-8,y,pct,size=8,weight='bold',color=quota_color(q.left),anchor='ne')
+                rounded(c,8,y+13,sw-8,y+16,1.5,p['track'])
+                if q.left > 0:
+                    rounded(c,8,y+13,8+(sw-16)*q.left/100,y+16,1.5,quota_color(q.left))
+                y += MINI_ROW
+            y += MINI_GAP
 
     def draw_quotas(self):
         c, p = self.body, self.colors
@@ -1133,35 +1286,50 @@ class LimitDesk:
                 text(c,x+11,y+32+4*19,f'+{len(sources)-4} nguồn khác',
                      size=8,color=p['quiet'])
 
-    def frame_move(self, event):
+    def frame_move(self, event, widget=None):
         if self.resize_origin is not None:
             return
         handle = self.resize_handle(event.x/self.k,event.y/self.k)
+        widget = widget or self.frame
         cursor_map = {'w':'sb_h_double_arrow','e':'sb_h_double_arrow',
                       'n':'sb_v_double_arrow','s':'sb_v_double_arrow',
                       'nw':'top_left_corner','se':'bottom_right_corner',
                       'ne':'top_right_corner','sw':'bottom_left_corner'}
         try:
-            self.frame.configure(cursor=cursor_map.get(handle, 'arrow'))
+            widget.configure(cursor=cursor_map.get(handle, 'arrow'))
         except tk.TclError:
-            self.frame.configure(cursor='arrow')
+            widget.configure(cursor='arrow')
 
     def resize_handle(self, x: float, y: float) -> str:
         """Resize target under a design-pixel point; no vertical resize without the chart."""
-        handle = hit_test_resize(x, y, self.width, self.height)
-        if not self.show_chart:
+        if self.minimal:
+            handle = hit_test_resize(x, y, self.width, self.height, MINI_EDGE_PIXELS, 14)
+        else:
+            handle = hit_test_resize(x, y, self.width, self.height)
+        if self.minimal or not self.show_chart:
             # Height is fully automatic when only quota cards are shown.
             handle = handle.replace('n', '').replace('s', '')
-            if not handle and x >= self.width-26 and y >= self.height-26:
+            corner = 14 if self.minimal else 26
+            if not handle and x >= self.width-corner and y >= self.height-corner:
                 handle = 'e'
         return handle
 
     def frame_double_click(self,event):
+        if self.minimal:
+            if self.resize_handle(event.x/self.k,event.y/self.k) in ('e','w'):
+                self.width = DEFAULT_MINI_WIDTH
+                self.config['mini_width'] = DEFAULT_MINI_WIDTH
+                self.resize_origin = None
+                self.draw()
+                self.persist()
+            else:
+                self.toggle_minimal()
+            return
         if event.x/self.k >= self.width-29 and event.y/self.k >= self.height-29:
             self.config['manual_height'] = False
             self.config['height'] = None
-            self.width = WIDTH
-            self.config['width'] = WIDTH
+            self.width = max(self.min_w, WIDTH)
+            self.config['width'] = self.width
             self.resize_origin = None
             self.draw()
             self.persist()
@@ -1174,6 +1342,9 @@ class LimitDesk:
                                  self.px(self.width),self.px(self.height))
             self.resize_origin = (handle,event.x_root,event.y_root,current)
             self.drag_origin = None
+            return
+        if self.minimal:
+            self.drag_origin=(event.x_root,event.y_root,self.root.winfo_x(),self.root.winfo_y())
             return
         if ey >= self.height-FOOTER_H:
             if ex < 220:
@@ -1200,12 +1371,13 @@ class LimitDesk:
             k = self.k
             r = resize_rect(original,handle,event.x_root-ox,event.y_root-oy,
                             self.work_area(),
-                            self.px(minimum_height(self.card_specs(), self.show_chart)),
-                            self.px(MIN_WIDTH))
+                            self.px(self.height if self.minimal else
+                                    minimum_height(self.card_specs(), self.show_chart)),
+                            self.px(self.min_w))
             if 's' in handle or 'n' in handle:
                 self.config['manual_height'] = True
                 self.config['height'] = max(1, round(r.height/k))
-            self.width = max(MIN_WIDTH, round(r.width/k))
+            self.width = max(self.min_w, round(r.width/k))
             self.root.geometry(f'{r.width}x{r.height}+{r.x}+{r.y}')
             self.root.update_idletasks()  # reflow reads the new origin back
             self.draw()
@@ -1241,8 +1413,8 @@ class LimitDesk:
         x0,y0 = self.root.winfo_x(),self.root.winfo_y()
         left,top,right,bottom = self.work_area()
         # Same DPI factor as the widget, but never taller than the work area.
-        sk = min(self.k, max(0.6, (bottom-top-20)/630))
-        w,h = int(354*sk), int(630*sk)
+        sk = min(self.k, max(0.6, (bottom-top-20)/SETTINGS_H))
+        w,h = int(354*sk), int(SETTINGS_H*sk)
         x=x0-w-13 if x0>=w+20 else x0+self.px(self.width)+12
         if x+w>right:
             x=max(left,right-w-10)
@@ -1255,7 +1427,7 @@ class LimitDesk:
         self.settings_canvas=c
         c.bind('<Button-1>',self.settings_click)
         c.bind('<B1-Motion>',self.settings_drag)
-        c.bind('<ButtonRelease-1>',lambda e: setattr(self,'opacity_drag',False))
+        c.bind('<ButtonRelease-1>',self.settings_release)
         p.deiconify()
         self.draw_settings()
 
@@ -1271,7 +1443,7 @@ class LimitDesk:
         c,p=self.settings_canvas,self.colors
         c.delete('all')
         self.settings_hit=[]
-        rounded(c,2,2,352,628,22,p['bg'],p['border'],2)
+        rounded(c,2,2,352,SETTINGS_H-2,22,p['bg'],p['border'],2)
         text(c,23,20,'Tùy chỉnh widget',size=13,weight='bold',color=p['text'])
         text(c,331,17,'×',size=18,weight='bold',color=p['muted'],anchor='ne')
         self.settings_hit.append(((309,7,350,50),'close',None))
@@ -1325,8 +1497,21 @@ class LimitDesk:
         self.draw_switch(c,25,449,'Luôn nổi trên cùng',self.config['always_on_top'],'top')
         self.draw_switch(c,25,496,'Khởi động cùng Windows',self.config['autostart'],'autostart')
         self.draw_switch(c,25,543,'Hiện biểu đồ token theo ngày',self.show_chart,'chart')
-        text(c,25,595,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
-        text(c,25,610,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
+        self.draw_switch(c,25,590,'Chế độ tối giản (nhỏ nhất)',self.minimal,'minimal')
+        text(c,25,637,'Chiều rộng tối thiểu',size=10,color=p['text'])
+        text(c,329,637,f'{self.config["min_width"]}px',size=10,
+             weight='bold',color=p['accent'],anchor='ne')
+        span=MIN_WIDTH_CEIL-MIN_WIDTH_FLOOR
+        frac=(self.config['min_width']-MIN_WIDTH_FLOOR)/span
+        rounded(c,26,674,329,681,3,p['track'])
+        rounded(c,26,674,26+303*frac,681,3,p['accent'])
+        xx=26+303*frac
+        c.create_oval(xx-8,670,xx+8,686,fill=p['text'],outline=p['accent'],width=2)
+        self.settings_hit.append(((19,663,335,691),'minw',None))
+        text(c,25,700,'Giới hạn kéo hẹp cửa sổ; chế độ tối giản kéo hẹp tới 110px.',
+             size=8,color=p['quiet'])
+        text(c,25,722,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
+        text(c,25,737,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
 
     def draw_switch(self,c,x,y,label_,enabled,action):
         p=self.colors
@@ -1347,6 +1532,11 @@ class LimitDesk:
                 elif act=='opacity':
                     self.opacity_drag=True
                     self.move_opacity(ex)
+                elif act=='minw':
+                    self.minw_drag=True
+                    self.move_min_width(ex)
+                elif act=='minimal':
+                    self.toggle_minimal()
                 elif act=='provider':
                     self.toggle_provider(arg)
                 elif act=='interval':
@@ -1365,6 +1555,18 @@ class LimitDesk:
     def settings_drag(self,event):
         if self.opacity_drag and self.settings_canvas is not None:
             self.move_opacity(event.x/self.settings_canvas.k)
+        elif self.minw_drag and self.settings_canvas is not None:
+            self.move_min_width(event.x/self.settings_canvas.k)
+
+    def move_min_width(self,x):
+        span=MIN_WIDTH_CEIL-MIN_WIDTH_FLOOR
+        value=MIN_WIDTH_FLOOR + clamp((x-26)/303,0,1)*span
+        if clamp_min_width(round(value/10)*10) != self.config['min_width']:
+            self.set_min_width(value)
+
+    def settings_release(self,event):
+        self.opacity_drag=False
+        self.minw_drag=False
 
     def move_opacity(self,x):
         val=0.55 + clamp((x-26)/303,0,1)*0.45

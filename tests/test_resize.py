@@ -70,3 +70,23 @@ class ResizeGeometryTest(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class MinWidthTest(unittest.TestCase):
+    def test_clamp_min_width(self):
+        from resize import MIN_WIDTH_CEIL, MIN_WIDTH_FLOOR, clamp_min_width
+        self.assertEqual(clamp_min_width(10), MIN_WIDTH_FLOOR)
+        self.assertEqual(clamp_min_width(99999), MIN_WIDTH_CEIL)
+        self.assertEqual(clamp_min_width('320'), 320)
+        self.assertEqual(clamp_min_width('abc'), MIN_WIDTH)
+        self.assertEqual(clamp_min_width(None), MIN_WIDTH)
+
+    def test_custom_min_width_is_the_resize_limit(self):
+        start = WindowRect(100, 100, 400, 300)
+        rect = resize_rect(start, 'e', -500, 0, (0, 0, 1920, 1080), 200, min_width=260)
+        self.assertEqual(rect.width, 260)
+
+    def test_smaller_edge_for_minimal_mode(self):
+        self.assertEqual(hit_test_resize(8, 50, 190, 80), 'w')
+        self.assertEqual(hit_test_resize(8, 50, 190, 80, edge=6, corner=14), '')
+        self.assertEqual(hit_test_resize(185, 75, 190, 80, edge=6, corner=14), 'se')
