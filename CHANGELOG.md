@@ -1,5 +1,10 @@
 # Changelog
 
+## V5.4 - 17/11/2026
+
+- Thêm **icon ứng dụng** (ba vòng gauge theo màu Codex / Claude Code / Antigravity): `assets/app_icon.ico|png`, tạo lại bằng `tools/make_icon.py`. Dùng cho cửa sổ, nút taskbar và file `.exe` (PyInstaller `--icon`). App có AppUserModelID riêng nên không bị gộp vào icon Python trên taskbar.
+- Thêm tùy chọn **Hiện trên thanh taskbar** trong ⚙ Tùy chỉnh (mặc định tắt, như trước đây). Lưu trong `settings.json` (`show_in_taskbar`); bật/tắt có hiệu lực ngay, không cần khởi động lại.
+
 ## V5.3 - 17/11/2026
 
 - Cho phép đổi **chiều rộng tối thiểu** của widget (trước đây cố định 390 px): thanh trượt trong ⚙ Tùy chỉnh, 240–600 px, bước 10 px. Lưu trong `settings.json` (`min_width`). Tiêu đề header tự cắt `…` khi cửa sổ hẹp.

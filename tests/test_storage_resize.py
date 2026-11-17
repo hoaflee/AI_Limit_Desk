@@ -94,3 +94,8 @@ class MinWidthSettingsTest(unittest.TestCase):
         self.assertEqual(loaded['mini_width'], 110)
         self.assertFalse(loaded['minimal'])
         self.assertTrue(self._load({'minimal': True})['minimal'])
+
+    def test_show_in_taskbar_defaults_off_and_must_be_literal_true(self):
+        self.assertFalse(self._load({})['show_in_taskbar'])
+        self.assertFalse(self._load({'show_in_taskbar': 'yes'})['show_in_taskbar'])
+        self.assertTrue(self._load({'show_in_taskbar': True})['show_in_taskbar'])

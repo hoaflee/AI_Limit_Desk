@@ -25,6 +25,7 @@ DEFAULTS = {
     'x': None, 'y': None, 'autostart': False,
     'width': 440, 'height': None, 'manual_height': False,
     'min_width': MIN_WIDTH, 'minimal': False, 'mini_width': DEFAULT_MINI_WIDTH,
+    'show_in_taskbar': False,
 }
 
 
@@ -67,6 +68,7 @@ def load_settings() -> dict:
     except (TypeError, ValueError, OverflowError):
         values['mini_width'] = DEFAULT_MINI_WIDTH
     values['minimal'] = values['minimal'] is True
+    values['show_in_taskbar'] = values['show_in_taskbar'] is True
     try:
         values['height'] = max(1, min(2400, int(values['height']))) if values['height'] is not None else None
     except (TypeError, ValueError, OverflowError):

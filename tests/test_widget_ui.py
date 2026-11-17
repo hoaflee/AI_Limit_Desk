@@ -451,6 +451,38 @@ class WidgetUiTest(unittest.TestCase):
         self.assertEqual(self.app.layout,main.MINI)
 
 
+    @unittest.skipUnless(sys.platform == 'win32', 'taskbar styles are Windows only')
+    def test_taskbar_option_toggles_appwindow_style_from_settings(self):
+        import ctypes
+        app=self.app
+        user32=ctypes.windll.user32
+        user32.GetParent.restype=ctypes.c_void_p
+        user32.GetParent.argtypes=[ctypes.c_void_p]
+        user32.GetWindowLongPtrW.restype=ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes=[ctypes.c_void_p,ctypes.c_int]
+
+        def exstyle():
+            app.root.update_idletasks()
+            hwnd=user32.GetParent(app.root.winfo_id()) or app.root.winfo_id()
+            return user32.GetWindowLongPtrW(hwnd,-20)
+        APP,TOOL=0x40000,0x80
+        self.assertFalse(app.config['show_in_taskbar'])
+        self.assertFalse(exstyle() & APP)
+        app.show_settings()
+        hits=[box for box,act,_ in app.settings_hit if act=='taskbar']
+        self.assertEqual(len(hits),1)
+        x1,y1,x2,y2=hits[0]
+        app.settings_click(SimpleNamespace(x=(x1+x2)//2,y=(y1+y2)//2))
+        self.assertTrue(app.config['show_in_taskbar'])
+        self.assertTrue(exstyle() & APP)
+        self.assertFalse(exstyle() & TOOL)
+        self.assertEqual(app.root.state(),'normal')
+        app.toggle_taskbar()
+        self.assertFalse(app.config['show_in_taskbar'])
+        self.assertFalse(exstyle() & APP)
+        self.assertTrue(exstyle() & TOOL)
+
+
 @unittest.skipUnless(os.environ.get('DISPLAY') or sys.platform == 'win32',
                      'No Tk display available')
 class RefreshSchedulingTest(unittest.TestCase):

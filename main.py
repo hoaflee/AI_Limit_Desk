@@ -41,7 +41,7 @@ WIDTH = DEFAULT_WIDTH
 HEADER_H = HEADER_HEIGHT
 FOOTER_H = FOOTER_HEIGHT
 MARGIN = 11
-SETTINGS_H = 760  # design-pixel height of the Tùy chỉnh panel
+SETTINGS_H = 807  # design-pixel height of the Tùy chỉnh panel
 MINI = 'minimal'  # sentinel stored in LimitDesk.layout while in minimal mode
 # Rows shorter than this cannot hold label + reset + track on separate lines.
 COMPACT_ROW_BELOW = 36
@@ -265,6 +265,7 @@ class LimitDesk:
             except tk.TclError:
                 pass
         self.root.wm_attributes('-topmost', bool(self.config['always_on_top']))
+        self.set_window_icon()
         self.apply_opacity()
         self.k = self.detect_scale()
         left, top, right, bottom = self.work_area()
@@ -311,6 +312,7 @@ class LimitDesk:
         self.root.bind('<Control-r>', lambda _: self.refresh(manual=True))
         self.root.bind('<Control-t>', lambda _: self.toggle_theme())
         self.root.protocol('WM_DELETE_WINDOW', self.quit)
+        self.apply_taskbar(redraw=False)  # while still withdrawn: no flicker
         self.root.deiconify()
         self.draw()
         self.root.after(120, self.pump)
@@ -649,6 +651,59 @@ class LimitDesk:
     def toggle_top(self):
         self.config['always_on_top'] = not self.config['always_on_top']
         self.root.wm_attributes('-topmost', self.config['always_on_top'])
+        self.persist()
+        self.draw_settings()
+
+    def set_window_icon(self):
+        res = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets'
+        try:
+            if sys.platform == 'win32' and (res / 'app_icon.ico').is_file():
+                self.root.iconbitmap(default=str(res / 'app_icon.ico'))
+            elif (res / 'app_icon.png').is_file():
+                self.icon_image = tk.PhotoImage(master=self.root, file=str(res / 'app_icon.png'))
+                self.root.iconphoto(True, self.icon_image)
+        except tk.TclError:
+            pass  # A missing icon must never prevent the widget from starting.
+
+    def apply_taskbar(self, redraw: bool = True):
+        """Show/hide the widget's taskbar button (Windows only).
+
+        A borderless (overrideredirect) window is a tool window and gets no
+        taskbar button; WS_EX_APPWINDOW forces one. Changing the style of a
+        visible window only takes effect after the shell sees it re-shown.
+        """
+        if sys.platform != 'win32':
+            return
+        want = bool(self.config.get('show_in_taskbar'))
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            get = user32.GetWindowLongPtrW
+            set_ = user32.SetWindowLongPtrW
+            get.restype = ctypes.c_ssize_t
+            get.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            set_.restype = ctypes.c_ssize_t
+            set_.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+            user32.GetParent.restype = ctypes.c_void_p
+            user32.GetParent.argtypes = [ctypes.c_void_p]
+            self.root.update_idletasks()
+            hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            style = get(hwnd, -20)  # GWL_EXSTYLE
+            WS_EX_APPWINDOW, WS_EX_TOOLWINDOW = 0x00040000, 0x00000080
+            new = ((style | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW) if want else                   ((style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW)
+            if new == style:
+                return
+            set_(hwnd, -20, new)
+            if redraw and self.root.state() != 'withdrawn':
+                user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                user32.ShowWindow(hwnd, 8)  # SW_SHOWNA: re-register without stealing focus
+        except (AttributeError, OSError, tk.TclError):
+            pass
+
+    def toggle_taskbar(self):
+        self.config['show_in_taskbar'] = not self.config.get('show_in_taskbar', False)
+        self.apply_taskbar()
         self.persist()
         self.draw_settings()
 
@@ -1498,20 +1553,21 @@ class LimitDesk:
         self.draw_switch(c,25,496,'Khởi động cùng Windows',self.config['autostart'],'autostart')
         self.draw_switch(c,25,543,'Hiện biểu đồ token theo ngày',self.show_chart,'chart')
         self.draw_switch(c,25,590,'Chế độ tối giản (nhỏ nhất)',self.minimal,'minimal')
-        text(c,25,637,'Chiều rộng tối thiểu',size=10,color=p['text'])
-        text(c,329,637,f'{self.config["min_width"]}px',size=10,
+        self.draw_switch(c,25,637,'Hiện trên thanh taskbar',self.config.get('show_in_taskbar',False),'taskbar')
+        text(c,25,684,'Chiều rộng tối thiểu',size=10,color=p['text'])
+        text(c,329,684,f'{self.config["min_width"]}px',size=10,
              weight='bold',color=p['accent'],anchor='ne')
         span=MIN_WIDTH_CEIL-MIN_WIDTH_FLOOR
         frac=(self.config['min_width']-MIN_WIDTH_FLOOR)/span
-        rounded(c,26,674,329,681,3,p['track'])
-        rounded(c,26,674,26+303*frac,681,3,p['accent'])
+        rounded(c,26,721,329,728,3,p['track'])
+        rounded(c,26,721,26+303*frac,728,3,p['accent'])
         xx=26+303*frac
-        c.create_oval(xx-8,670,xx+8,686,fill=p['text'],outline=p['accent'],width=2)
-        self.settings_hit.append(((19,663,335,691),'minw',None))
-        text(c,25,700,'Giới hạn kéo hẹp cửa sổ; chế độ tối giản kéo hẹp tới 110px.',
+        c.create_oval(xx-8,717,xx+8,733,fill=p['text'],outline=p['accent'],width=2)
+        self.settings_hit.append(((19,710,335,738),'minw',None))
+        text(c,25,747,'Giới hạn kéo hẹp cửa sổ; chế độ tối giản kéo hẹp tới 110px.',
              size=8,color=p['quiet'])
-        text(c,25,722,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
-        text(c,25,737,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
+        text(c,25,769,'Hiện Codex và Claude Code theo mặc định.',size=8,color=p['quiet'])
+        text(c,25,784,'Tùy chọn được lưu trên máy Windows của bạn.',size=8,color=p['quiet'])
 
     def draw_switch(self,c,x,y,label_,enabled,action):
         p=self.colors
@@ -1548,6 +1604,8 @@ class LimitDesk:
                     self.toggle_top()
                 elif act=='autostart':
                     self.toggle_autostart()
+                elif act=='taskbar':
+                    self.toggle_taskbar()
                 elif act=='chart':
                     self.toggle_chart()
                 break
@@ -1595,6 +1653,10 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
             DPI_AWARE = True
         except (AttributeError, OSError):
+            pass
+        try:  # Own taskbar identity/icon instead of being grouped under python.exe.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('AILimitDesk.V5')
+        except (AttributeError, OSError, NameError):
             pass
     parser=argparse.ArgumentParser(description='AI Limit Desk V5 — draggable window resizing')
     parser.add_argument('--screenshot',help='Capture a real-data screenshot for diagnostics')
